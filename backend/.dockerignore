@@ -1,0 +1,16 @@
+# Build context for the backend image. Everything not needed to compile the
+# application is excluded: the image build copies `src` and the build descriptors
+# explicitly, so this file mainly keeps the context small and prevents local
+# runtime data or an IDE directory from being uploaded to the daemon.
+.git
+.gitignore
+target/
+*.log
+*.jfr
+*.hprof
+data/
+.idea/
+*.iml
+.vscode/
+Dockerfile
+.dockerignore

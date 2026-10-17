@@ -1,0 +1,27 @@
+# =============================================================================
+# postgres profile - the supported durable configuration used by docker compose.
+# =============================================================================
+spring:
+  datasource:
+    url: ${REPOPILOT_DB_URL:jdbc:postgresql://localhost:5432/repopilot}
+    username: ${REPOPILOT_DB_USERNAME:repopilot}
+    password: ${REPOPILOT_DB_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: repopilot-postgres
+      # Bounded on purpose. Every database call in RepoPilot runs on a bounded
+      # scheduling pool, so a larger pool would only move the queue.
+      maximum-pool-size: ${REPOPILOT_DB_POOL_SIZE:12}
+      minimum-idle: 2
+      connection-timeout: 5000
+      validation-timeout: 3000
+      max-lifetime: 1800000
+      # Server-side statement timeout guards against a runaway query holding a
+      # connection while a long analysis job is running.
+      data-source-properties:
+        options: "-c statement_timeout=60000 -c application_name=repopilot"
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    properties:
+      hibernate.dialect: org.hibernate.dialect.PostgreSQLDialect
+      hibernate.jdbc.lob.non_contextual_creation: true

@@ -1,0 +1,176 @@
+/*
+ * RepoPilot design tokens.
+ *
+ * Dark-first: the default theme is dark because the product is used for long
+ * analysis sessions and sits beside an IDE. A light theme is provided by
+ * overriding the semantic layer under [data-theme="light"], so components only
+ * ever reference semantic variables, never raw palette values.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ---- palette: neutrals (blue-tinted, easy on the eyes) ---- */
+  --rp-ink-950: #080a0f;
+  --rp-ink-900: #0b0e14;
+  --rp-ink-850: #0f131b;
+  --rp-ink-800: #141924;
+  --rp-ink-750: #1a202c;
+  --rp-ink-700: #222a38;
+  --rp-ink-600: #2e3949;
+  --rp-ink-500: #414f64;
+  --rp-ink-400: #64748b;
+  --rp-ink-300: #93a1b5;
+  --rp-ink-200: #c2cbd9;
+  --rp-ink-100: #e3e8f0;
+  --rp-ink-050: #f4f6fa;
+
+  /* ---- palette: brand and signal ---- */
+  --rp-indigo-400: #8b9bff;
+  --rp-indigo-500: #6d80f5;
+  --rp-indigo-600: #5566e0;
+  --rp-teal-400: #3fd8c0;
+  --rp-teal-500: #22bda6;
+  --rp-amber-400: #f5b544;
+  --rp-amber-500: #e09b23;
+  --rp-rose-400: #ff7a7a;
+  --rp-rose-500: #ef5f5f;
+  --rp-emerald-400: #45d18a;
+  --rp-emerald-500: #2fb573;
+  --rp-sky-400: #61aefc;
+
+  /* ---- semantic surfaces ---- */
+  --bg-app: var(--rp-ink-900);
+  --bg-canvas: var(--rp-ink-850);
+  --bg-surface: var(--rp-ink-800);
+  --bg-surface-raised: var(--rp-ink-750);
+  --bg-sunken: var(--rp-ink-950);
+  --bg-overlay: rgba(4, 6, 10, 0.72);
+
+  --border-subtle: var(--rp-ink-700);
+  --border-strong: var(--rp-ink-600);
+  --border-focus: var(--rp-indigo-500);
+
+  --text-primary: var(--rp-ink-100);
+  --text-secondary: var(--rp-ink-300);
+  --text-muted: var(--rp-ink-400);
+  --text-inverse: var(--rp-ink-950);
+  --text-on-accent: #ffffff;
+
+  /* ---- semantic signals ---- */
+  --accent: var(--rp-indigo-500);
+  --accent-hover: var(--rp-indigo-400);
+  --accent-muted: rgba(109, 128, 245, 0.14);
+  --accent-border: rgba(109, 128, 245, 0.4);
+
+  --signal-success: var(--rp-emerald-400);
+  --signal-success-muted: rgba(69, 209, 138, 0.13);
+  --signal-warning: var(--rp-amber-400);
+  --signal-warning-muted: rgba(245, 181, 68, 0.13);
+  --signal-danger: var(--rp-rose-400);
+  --signal-danger-muted: rgba(255, 122, 122, 0.13);
+  --signal-info: var(--rp-sky-400);
+  --signal-info-muted: rgba(97, 174, 252, 0.13);
+  --signal-neutral: var(--rp-ink-400);
+  --signal-neutral-muted: rgba(100, 116, 139, 0.16);
+
+  /* ---- evidence categories (used consistently across the whole UI) ---- */
+  --evidence-observation: var(--rp-teal-400);
+  --evidence-static: var(--rp-sky-400);
+  --evidence-runtime: var(--rp-amber-400);
+  --evidence-hypothesis: var(--rp-indigo-400);
+
+  /* ---- typography ---- */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+    Consolas, "Liberation Mono", monospace;
+
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.875rem;
+  --text-md: 0.9375rem;
+  --text-lg: 1.0625rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
+
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* ---- spacing (4px base) ---- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+
+  /* ---- radii ---- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 9px;
+  --radius-lg: 13px;
+  --radius-xl: 18px;
+  --radius-pill: 999px;
+
+  /* ---- elevation ---- */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.42);
+  --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.5);
+  --shadow-focus: 0 0 0 3px rgba(109, 128, 245, 0.32);
+
+  /* ---- layout ---- */
+  --nav-rail-width: 236px;
+  --nav-rail-width-collapsed: 68px;
+  --topbar-height: 56px;
+  --content-max-width: 1560px;
+
+  --transition-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-app: var(--rp-ink-050);
+  --bg-canvas: #ffffff;
+  --bg-surface: #ffffff;
+  --bg-surface-raised: var(--rp-ink-050);
+  --bg-sunken: #eef1f6;
+  --bg-overlay: rgba(15, 19, 27, 0.42);
+
+  --border-subtle: #e2e6ee;
+  --border-strong: #cdd4e0;
+  --border-focus: var(--rp-indigo-600);
+
+  --text-primary: #141924;
+  --text-secondary: #4a5568;
+  --text-muted: #6b7688;
+  --text-inverse: #ffffff;
+
+  --accent: var(--rp-indigo-600);
+  --accent-hover: #4655cc;
+  --accent-muted: rgba(85, 102, 224, 0.1);
+  --accent-border: rgba(85, 102, 224, 0.32);
+
+  --signal-success: var(--rp-emerald-500);
+  --signal-warning: var(--rp-amber-500);
+  --signal-danger: var(--rp-rose-500);
+  --signal-info: #2f8ce0;
+
+  --shadow-sm: 0 1px 3px rgba(20, 25, 36, 0.1);
+  --shadow-md: 0 6px 18px rgba(20, 25, 36, 0.12);
+  --shadow-lg: 0 18px 48px rgba(20, 25, 36, 0.16);
+}

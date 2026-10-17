@@ -1,0 +1,284 @@
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseQueryOptions,
+} from "@tanstack/react-query";
+import { api, isUnauthorized } from "@/lib/api";
+import type {
+  AuthBootstrap,
+  CoverageView,
+  EdgeView,
+  GraphView,
+  HealthStatus,
+  JobCounters,
+  JobStatus,
+  JobView,
+  MappingView,
+  OverviewView,
+  PageResponse,
+  RepositorySummary,
+  RevisionLookup,
+  SourceContentView,
+  SourceFileView,
+  SymbolView,
+  Uuid,
+  WorkspaceSummary,
+} from "@/lib/types";
+
+/**
+ * Typed React Query hooks over the API client.
+ *
+ * A query that needs a selection id is `enabled` only when the id is present, so
+ * screens can be mounted before a repository is chosen without each one re-implementing
+ * a guard. Errors that mean "the token is gone" are not retried and are surfaced by the
+ * shell as a reconnect prompt.
+ */
+
+/** Common options: never retry auth failures, they need the operator to act. */
+function guard<T>(options?: Partial<UseQueryOptions<T>>): Partial<UseQueryOptions<T>> {
+  return {
+    retry: (failureCount, error) => !isUnauthorized(error) && failureCount < 2,
+    ...options,
+  };
+}
+
+/** The public bootstrap document: auth mode and where the token lives. */
+export function useBootstrap() {
+  return useQuery<AuthBootstrap>({
+    queryKey: ["auth-bootstrap"],
+    queryFn: ({ signal }) => api.bootstrap(signal),
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
+export function useOverview() {  return useQuery<OverviewView>({
+    queryKey: ["overview"],
+    queryFn: ({ signal }) => api.overview(signal),
+    refetchInterval: 15_000,
+    ...guard(),
+  });
+}
+
+export function useWorkspaces() {
+  return useQuery<WorkspaceSummary[]>({
+    queryKey: ["workspaces"],
+    queryFn: ({ signal }) => api.listWorkspaces(signal),
+    staleTime: 30_000,
+    ...guard(),
+  });
+}
+
+export function useRepositories(workspaceId: Uuid | null) {
+  return useQuery<PageResponse<RepositorySummary>>({
+    queryKey: ["repositories", workspaceId],
+    queryFn: ({ signal }) => api.listRepositories(workspaceId as Uuid, signal),
+    enabled: workspaceId !== null,
+    ...guard(),
+  });
+}
+
+export function useRepository(repositoryId: Uuid | null) {
+  return useQuery<RepositorySummary>({
+    queryKey: ["repository", repositoryId],
+    queryFn: ({ signal }) => api.getRepository(repositoryId as Uuid, signal),
+    enabled: repositoryId !== null,
+    ...guard(),
+  });
+}
+
+export function useRevisions(repositoryId: Uuid | null) {
+  return useQuery<RevisionLookup[]>({
+    queryKey: ["revisions", repositoryId],
+    queryFn: ({ signal }) => api.revisions(repositoryId as Uuid, signal),
+    enabled: repositoryId !== null,
+    ...guard(),
+  });
+}
+
+export function useCoverage(repositoryId: Uuid | null, revisionId: Uuid | null) {
+  return useQuery<CoverageView>({
+    queryKey: ["coverage", repositoryId, revisionId],
+    queryFn: ({ signal }) => api.coverage(repositoryId as Uuid, revisionId ?? undefined, signal),
+    enabled: repositoryId !== null,
+    ...guard(),
+  });
+}
+
+export function useFiles(repositoryId: Uuid | null, revisionId: Uuid | null) {
+  return useQuery<PageResponse<SourceFileView>>({
+    queryKey: ["files", repositoryId, revisionId],
+    queryFn: ({ signal }) =>
+      api.files(repositoryId as Uuid, { size: 500, revisionId: revisionId ?? undefined }, signal),
+    enabled: repositoryId !== null,
+    ...guard(),
+  });
+}
+
+export function useFileContent(
+  repositoryId: Uuid | null,
+  path: string | null,
+  revisionId: Uuid | null,
+) {
+  return useQuery<SourceContentView>({
+    queryKey: ["file-content", repositoryId, path, revisionId],
+    queryFn: ({ signal }) =>
+      api.fileContent(repositoryId as Uuid, path as string, revisionId ?? undefined, signal),
+    enabled: repositoryId !== null && path !== null && path.length > 0,
+    staleTime: 60_000,
+    ...guard(),
+  });
+}
+
+export function useSymbols(repositoryId: Uuid | null, query: string, revisionId: Uuid | null) {
+  return useQuery<PageResponse<SymbolView>>({
+    queryKey: ["symbols", repositoryId, query, revisionId],
+    queryFn: ({ signal }) =>
+      api.searchSymbols(
+        repositoryId as Uuid,
+        query,
+        { size: 100, revisionId: revisionId ?? undefined },
+        signal,
+      ),
+    enabled: repositoryId !== null,
+    ...guard(),
+  });
+}
+
+export function useFileSymbols(repositoryId: Uuid | null, sourceFileId: Uuid | null) {
+  return useQuery<SymbolView[]>({
+    queryKey: ["file-symbols", repositoryId, sourceFileId],
+    queryFn: ({ signal }) => api.fileSymbols(repositoryId as Uuid, sourceFileId as Uuid, signal),
+    enabled: repositoryId !== null && sourceFileId !== null,
+    ...guard(),
+  });
+}
+
+export function useSymbolReferences(repositoryId: Uuid | null, symbolId: Uuid | null) {
+  return useQuery<EdgeView[]>({
+    queryKey: ["symbol-references", repositoryId, symbolId],
+    queryFn: ({ signal }) => api.symbolReferences(repositoryId as Uuid, symbolId as Uuid, signal),
+    enabled: repositoryId !== null && symbolId !== null,
+    ...guard(),
+  });
+}
+
+export function useMappings(repositoryId: Uuid | null, revisionId: Uuid | null) {
+  return useQuery<MappingView[]>({
+    queryKey: ["mappings", repositoryId, revisionId],
+    queryFn: ({ signal }) => api.mappings(repositoryId as Uuid, undefined, revisionId ?? undefined, signal),
+    enabled: repositoryId !== null,
+    ...guard(),
+  });
+}
+
+export function useGraph(repositoryId: Uuid | null, revisionId: Uuid | null) {
+  return useQuery<GraphView>({
+    queryKey: ["graph", repositoryId, revisionId],
+    queryFn: ({ signal }) => api.graph(repositoryId as Uuid, undefined, revisionId ?? undefined, signal),
+    enabled: repositoryId !== null,
+    ...guard(),
+  });
+}
+
+export function useJobs(status: JobStatus | undefined) {
+  return useQuery<PageResponse<JobView>>({
+    queryKey: ["jobs", status ?? "ALL"],
+    queryFn: ({ signal }) => api.listJobs({ status, size: 100 }, signal),
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      const active = data?.items.some((job) => job.status === "QUEUED" || job.status === "RUNNING");
+      return active ? 2_000 : 15_000;
+    },
+    ...guard(),
+  });
+}
+
+export function useJobCounters() {
+  return useQuery<JobCounters>({
+    queryKey: ["job-counters"],
+    queryFn: ({ signal }) => api.jobCounters(signal),
+    refetchInterval: 10_000,
+    ...guard(),
+  });
+}
+
+/**
+ * Backend health for the shell's connection indicator.
+ *
+ * The readiness group is polled rather than the top-level health document so the UI
+ * reflects what actually matters to an operator: database, disk space, worker pool
+ * and the AI provider, not just "the process is alive".
+ */
+export function useReadiness() {
+  return useQuery<HealthStatus>({
+    queryKey: ["readiness"],
+    queryFn: ({ signal }) => api.readiness(signal),
+    refetchInterval: 20_000,
+    // A readiness probe is what tells us the backend is alive; retrying it inside a
+    // failed state only delays the honest "down" answer.
+    retry: false,
+  });
+}
+
+// ---------------------------------------------------------------- mutations
+
+export function useStartIndexing(repositoryId: Uuid | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.startIndexing(repositoryId as Uuid),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["job-counters"] });
+      void queryClient.invalidateQueries({ queryKey: ["repository", repositoryId] });
+    },
+  });
+}
+
+export function useCancelJob() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: Uuid) => api.cancelJob(jobId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["job-counters"] });
+    },
+  });
+}
+
+export function useRegisterRepository(workspaceId: Uuid | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { name: string | null; path: string }) =>
+      api.registerRepository(workspaceId as Uuid, input.name, input.path),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["repositories", workspaceId] });
+      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+      void queryClient.invalidateQueries({ queryKey: ["overview"] });
+    },
+  });
+}
+
+export function useCreateWorkspace() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { name: string; description: string | null }) =>
+      api.createWorkspace(input.name, input.description),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+      void queryClient.invalidateQueries({ queryKey: ["overview"] });
+    },
+  });
+}
+
+export function useDeleteRepository() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (repositoryId: Uuid) => api.deleteRepository(repositoryId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["repositories"] });
+      void queryClient.invalidateQueries({ queryKey: ["overview"] });
+    },
+  });
+}

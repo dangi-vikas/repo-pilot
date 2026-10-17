@@ -1,0 +1,44 @@
+# =============================================================================
+# local profile - zero external dependencies.
+#
+# Uses an embedded H2 file database in PostgreSQL compatibility mode and the
+# default local AI provider settings (Ollama, which may be absent).
+#
+# This profile exists so RepoPilot can be evaluated on a machine without Docker
+# or PostgreSQL. It is NOT the recommended production configuration and it has
+# these documented differences from PostgreSQL:
+#   * no jsonb / array / partial-index support (RepoPilot does not use them)
+#   * different query planner characteristics
+#   * different concurrency/locking behaviour under load
+# See docs/adr/0004-database-portability.md
+# =============================================================================
+spring:
+  datasource:
+    # Derived from the single repopilot.storage.data-dir property so the database file
+    # and the artefact directory can never diverge.
+    url: jdbc:h2:file:${repopilot.storage.data-dir:./data}/repopilot;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;DEFAULT_NULL_ORDERING=HIGH;AUTO_SERVER=FALSE;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+    hikari:
+      pool-name: repopilot-local
+      maximum-pool-size: 8
+      minimum-idle: 2
+      connection-timeout: 5000
+      validation-timeout: 3000
+      max-lifetime: 1800000
+  jpa:
+    # Hibernate auto-detects H2Dialect here. Specifying it explicitly only produces a
+    # deprecation warning and adds no behaviour, so it is omitted on purpose.
+    hibernate:
+      ddl-auto: none
+
+repopilot:
+  security:
+    # Local profile still requires a bearer token. The token is generated on first
+    # start and written to <data-dir>/token.txt when REPOPILOT_AUTH_TOKEN is unset.
+    allow-remote-bind: false
+
+logging:
+  level:
+    dev.repopilot: INFO

@@ -1,0 +1,160 @@
+spring:
+  application:
+    name: repopilot
+  profiles:
+    default: local
+  main:
+    banner-mode: "off"
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+      fail-on-empty-beans: false
+    deserialization:
+      fail-on-unknown-properties: false
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate.jdbc.time_zone: UTC
+      hibernate.jdbc.batch_size: 100
+      hibernate.order_inserts: true
+      hibernate.order_updates: true
+      hibernate.query.in_clause_parameter_padding: true
+      jakarta.persistence.query.timeout: 30000
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+  codec:
+    max-in-memory-size: 16MB
+  mvc:
+    problemdetails:
+      enabled: false
+
+server:
+  # Loopback by default. Remote binding requires repopilot.security.allow-remote-bind
+  # plus an explicit token; see SecurityConfiguration.
+  address: ${SERVER_ADDRESS:127.0.0.1}
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  compression:
+    enabled: true
+    mime-types: application/json,text/html,text/css,application/javascript,text/plain
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+    whitelabel:
+      enabled: false
+  netty:
+    connection-timeout: 10s
+  reactive:
+    session:
+      timeout: 30m
+
+management:
+  endpoints:
+    web:
+      base-path: /actuator
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState,ping
+        readiness:
+          include: readinessState,db,diskSpace,repoPilotWorkers,aiProvider
+  health:
+    diskspace:
+      threshold: 2GB
+    db:
+      enabled: true
+  info:
+    env:
+      enabled: false
+  observations:
+    key-values:
+      service: repopilot
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+springdoc:
+  api-docs:
+    path: /api/docs
+  swagger-ui:
+    path: /api/docs/ui
+  webjars:
+    prefix:
+
+repopilot:
+  version: "@project.version@"
+  security:
+    token: ${REPOPILOT_AUTH_TOKEN:}
+    allow-remote-bind: false
+    cors-allowed-origins: ${REPOPILOT_CORS_ALLOWED_ORIGINS:http://localhost:5173}
+    requests-per-minute-per-client: 240
+  workspace:
+    roots: ${REPOPILOT_WORKSPACE_ROOTS:}
+    default-root-name: repo-pilot-workspace
+    max-files-per-repository: ${REPOPILOT_MAX_FILES_PER_REPOSITORY:20000}
+    max-file-size-bytes: ${REPOPILOT_MAX_FILE_SIZE_BYTES:2097152}
+    max-repository-size-bytes: ${REPOPILOT_MAX_REPOSITORY_SIZE_BYTES:524288000}
+    follow-symlinks: false
+  jobs:
+    worker-threads: ${REPOPILOT_JOBS_WORKER_THREADS:3}
+    queue-capacity: ${REPOPILOT_JOBS_QUEUE_CAPACITY:200}
+    default-timeout-seconds: ${REPOPILOT_JOBS_DEFAULT_TIMEOUT_SECONDS:900}
+    stale-job-threshold-seconds: 120
+    dispatch-interval-millis: 1500
+  ai:
+    enabled: ${REPOPILOT_AI_ENABLED:true}
+    provider: ${REPOPILOT_AI_PROVIDER:ollama}
+    base-url: ${REPOPILOT_AI_BASE_URL:http://localhost:11434}
+    chat-model: ${REPOPILOT_AI_CHAT_MODEL:qwen2.5-coder:7b}
+    embedding-model: ${REPOPILOT_AI_EMBEDDING_MODEL:nomic-embed-text}
+    request-timeout-seconds: ${REPOPILOT_AI_REQUEST_TIMEOUT_SECONDS:120}
+    max-concurrent-requests: ${REPOPILOT_AI_MAX_CONCURRENT_REQUESTS:2}
+    context-char-budget: ${REPOPILOT_AI_CONTEXT_CHAR_BUDGET:24000}
+    max-completion-tokens: 2048
+    temperature: 0.1
+    embeddings-enabled: false
+    openai-compatible:
+      enabled: ${REPOPILOT_AI_OPENAI_ENABLED:false}
+      base-url: ${REPOPILOT_AI_OPENAI_BASE_URL:}
+      api-key: ${REPOPILOT_AI_OPENAI_API_KEY:}
+      chat-model: ${REPOPILOT_AI_OPENAI_CHAT_MODEL:}
+      embedding-model: ${REPOPILOT_AI_OPENAI_EMBEDDING_MODEL:}
+  analysis:
+    pmd-enabled: true
+    custom-checks-enabled: true
+    spotbugs-enabled: true
+    max-findings-per-run: 5000
+    max-jfr-events: 2000000
+    max-artifact-size-bytes: 1073741824
+    heap-dump-processing-budget-bytes: 2147483648
+  storage:
+    data-dir: ${REPOPILOT_DATA_DIR:./data}
+    artifacts-dir: artifacts
+    retention-days: 30
+    cleanup-temp-on-startup: true
+  privacy:
+    log-source-content: false
+    log-prompts: false
+    redact-detected-secrets: true
+
+logging:
+  level:
+    root: ${REPOPILOT_LOG_LEVEL:INFO}
+    dev.repopilot: ${REPOPILOT_LOG_LEVEL:INFO}
+    org.springframework.web: WARN
+    org.hibernate.SQL: WARN
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%X{correlationId:-}] %logger{36} - %msg%n"

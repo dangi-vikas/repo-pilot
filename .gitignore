@@ -1,0 +1,52 @@
+# ---- Build outputs ----
+target/
+dist/
+build/
+*.jar
+*.war
+!.mvn/wrapper/maven-wrapper.jar
+
+# ---- Node ----
+node_modules/
+.vite/
+*.tsbuildinfo
+coverage/
+
+# ---- RepoPilot runtime data (never commit user code or artifacts) ----
+data/
+workspace-data/
+artifacts/
+*.hprof
+*.jfr
+*.log
+
+# ---- Local environment / secrets ----
+.env
+.env.local
+.env.*.local
+# A local Spring override dropped at the project root is personal configuration.
+# The checked-in `local` profile under backend/src/main/resources is application
+# configuration and must stay tracked, so the pattern is anchored to the root.
+/application-local.yml
+*.pem
+*.key
+*.p12
+*.jks
+
+# ---- Toolchain bootstrap ----
+.tools/
+
+# ---- Generated benchmark corpus ----
+# Regenerated deterministically by scripts/generate-corpus.ps1; a 3 000-file synthetic
+# tree has no business in version control.
+corpus/generated/
+
+# ---- IDE / OS ----
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+.DS_Store
+Thumbs.db

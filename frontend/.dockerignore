@@ -1,0 +1,14 @@
+# Build context for the frontend image. `npm ci` needs package.json and the
+# lockfile; the build needs tsconfig, the Vite config, index.html and src. A host
+# node_modules would otherwise be copied into the image and can shadow the
+# container's own (different platform) install.
+.git
+.gitignore
+node_modules/
+dist/
+.vite/
+*.log
+.vscode/
+.idea/
+Dockerfile
+.dockerignore
