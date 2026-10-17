@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { CodeView } from "@/components/CodeView";
+import { FindingsPanel } from "@/components/FindingsPanel";
 import { IndexButton } from "@/components/IndexButton";
 import { RepositoryRequired } from "@/components/RepositoryRequired";
 import { Badge, Banner, Card, EmptyState, ErrorState, Loading, PageHeader, SearchInput } from "@/components/ui";
@@ -9,6 +10,8 @@ import {
   useFileContent,
   useFileSymbols,
   useFiles,
+  useFindingSummary,
+  useFindings,
   useMappings,
   useRevisions,
   useSymbolReferences,
@@ -16,11 +19,11 @@ import {
 } from "@/hooks/queries";
 import { ApiError } from "@/lib/api";
 import { formatBytes, formatCoverageSentence, formatLine, formatLineRange, formatNumber, hasValue, parseStatusTone, titleCase } from "@/lib/format";
-import type { SymbolView, Uuid } from "@/lib/types";
+import type { FindingView, SymbolView, Uuid } from "@/lib/types";
 import { useSelection } from "@/state/selection";
 
 type LeftMode = "files" | "symbols";
-type DetailTab = "source" | "symbols" | "mappings";
+type DetailTab = "source" | "symbols" | "mappings" | "findings";
 
 /**
  * The code explorer.
@@ -37,6 +40,12 @@ export function CodeExplorerPage() {
   const [selectedFileId, setSelectedFileId] = useState<Uuid | null>(null);
   const [selectedSymbol, setSelectedSymbol] = useState<SymbolView | null>(null);
   const [tab, setTab] = useState<DetailTab>("source");
+  // Which file the findings tab is scoped to, and the location a finding asked to open.
+  // Both are consumed as soon as they can be, so the screen never claims to be showing
+  // something it is not.
+  const [findingsPath, setFindingsPath] = useState<string | null>(null);
+  const [findingTarget, setFindingTarget] = useState<{ path: string; symbolId: Uuid | null } | null>(null);
+  const [findingHighlight, setFindingHighlight] = useState<{ start: number | null; end: number | null } | null>(null);
 
   const coverage = useCoverage(repositoryId, revisionId);
   const files = useFiles(repositoryId, revisionId);
@@ -53,6 +62,14 @@ export function CodeExplorerPage() {
   const content = useFileContent(repositoryId, selectedFile?.relativePath ?? null, revisionId);
   const fileSymbols = useFileSymbols(repositoryId, selectedFileId);
   const references = useSymbolReferences(repositoryId, selectedSymbol?.id ?? null);
+  // The run header for the findings tab, and the count for the selected file. Both are
+  // reads of the same analysis: the browser computes no finding count of its own.
+  const findingSummary = useFindingSummary(repositoryId, revisionId);
+  const fileFindings = useFindings(
+    repositoryId,
+    { path: selectedFile?.relativePath, size: 1 },
+    { enabled: selectedFile !== null },
+  );
 
   // One sentence describing what was read and what was deliberately not read, built
   // entirely from the API's own numbers: the browser must never compute a coverage
@@ -76,6 +93,26 @@ export function CodeExplorerPage() {
       setSelectedFileId(fileList[0]?.id ?? null);
     }
   }, [files.data, fileList, selectedFileId]);
+
+  // A finding clicked in the findings tab asks for a file and a symbol. The symbol can only
+  // be resolved once the target file's symbols have loaded, so the request waits here
+  // instead of the panel guessing which declaration a line belongs to.
+  useEffect(() => {
+    if (findingTarget === null || fileSymbols.data === undefined) {
+      return;
+    }
+    if (selectedFile === null || selectedFile.relativePath !== findingTarget.path) {
+      return;
+    }
+    const symbol =
+      findingTarget.symbolId === null
+        ? undefined
+        : fileSymbols.data.find((candidate) => candidate.id === findingTarget.symbolId);
+    if (symbol !== undefined) {
+      setSelectedSymbol(symbol);
+    }
+    setFindingTarget(null);
+  }, [findingTarget, fileSymbols.data, selectedFile]);
 
   if (repositoryId === null) {
     return (
@@ -128,14 +165,45 @@ export function CodeExplorerPage() {
   );
 
   // Zero means the indexer recorded no position, so it must not become a highlight.
+  // A finding's own line takes precedence over the enclosing symbol's range: the reader
+  // asked to see the finding, not the declaration around it.
   const highlightStart =
-    selectedSymbol !== null && hasValue(selectedSymbol.startLine) && selectedSymbol.startLine > 0
+    findingHighlight?.start ??
+    (selectedSymbol !== null && hasValue(selectedSymbol.startLine) && selectedSymbol.startLine > 0
       ? selectedSymbol.startLine
-      : null;
+      : null);
   const highlightEnd =
-    selectedSymbol !== null && hasValue(selectedSymbol.endLine) && selectedSymbol.endLine > 0
+    findingHighlight?.end ??
+    (selectedSymbol !== null && hasValue(selectedSymbol.endLine) && selectedSymbol.endLine > 0
       ? selectedSymbol.endLine
-      : null;
+      : null);
+
+  const fileFindingCount = fileFindings.data?.totalItems ?? 0;
+
+  /**
+   * Opens a finding's location.
+   *
+   * The highlight is only applied when the file is part of this revision. A line number
+   * from another revision would otherwise be drawn over unrelated code in whichever file
+   * happens to be displayed, which reads as a citation of the wrong code.
+   */
+  const openFinding = (finding: FindingView) => {
+    const target = fileList.find((file) => file.relativePath === finding.sourcePath);
+    setFindingTarget({ path: finding.sourcePath ?? "", symbolId: finding.symbolId ?? null });
+    setFindingHighlight(
+      target === undefined
+        ? null
+        : {
+            start: hasValue(finding.startLine) && finding.startLine > 0 ? finding.startLine : null,
+            end: hasValue(finding.endLine) && finding.endLine > 0 ? finding.endLine : null,
+          },
+    );
+    setSelectedSymbol(null);
+    if (target !== undefined) {
+      setSelectedFileId(target.id);
+    }
+    setTab("source");
+  };
 
   return (
     <>
@@ -237,6 +305,7 @@ export function CodeExplorerPage() {
                     onClick={() => {
                       setSelectedFileId(file.id);
                       setSelectedSymbol(null);
+                      setFindingHighlight(null);
                       setTab("source");
                     }}
                   >
@@ -266,6 +335,7 @@ export function CodeExplorerPage() {
                   onClick={() => {
                     setSelectedFileId(symbol.sourceFileId);
                     setSelectedSymbol(symbol);
+                    setFindingHighlight(null);
                     setTab("symbols");
                   }}
                 >
@@ -300,6 +370,21 @@ export function CodeExplorerPage() {
                     </div>
                   </div>
                   <div className="rp-spacer" />
+                  {fileFindingCount > 0 ? (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => {
+                        setFindingsPath(selectedFile.relativePath);
+                        setTab("findings");
+                      }}
+                      title="Show the findings for this file"
+                    >
+                      <Icon name="alert" size={14} />
+                      {formatNumber(fileFindingCount)}{" "}
+                      {fileFindingCount === 1 ? "finding" : "findings"} in this file
+                    </button>
+                  ) : null}
                   <Badge tone={parseStatusTone(selectedFile.parseStatus)} dot>
                     {selectedFile.parseStatus}
                   </Badge>
@@ -330,6 +415,11 @@ export function CodeExplorerPage() {
                     <Icon name="plug" size={14} />
                     Mappings
                     <span className="tab-count">{formatNumber(fileMappings.length)}</span>
+                  </button>
+                  <button type="button" aria-selected={tab === "findings"} onClick={() => setTab("findings")}>
+                    <Icon name="alert" size={14} />
+                    Findings
+                    <span className="tab-count">{formatNumber(findingSummary.data?.total ?? 0)}</span>
                   </button>
                 </div>
               </div>
@@ -448,6 +538,16 @@ export function CodeExplorerPage() {
                       </table>
                     </div>
                   )
+                ) : null}
+
+                {tab === "findings" ? (
+                  <FindingsPanel
+                    repositoryId={repositoryId}
+                    revisionId={revisionId}
+                    pathFilter={findingsPath}
+                    onClearPathFilter={() => setFindingsPath(null)}
+                    onOpenLocation={openFinding}
+                  />
                 ) : null}
               </div>
 

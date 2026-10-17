@@ -4,6 +4,10 @@ import type {
   CancellationOutcome,
   CoverageView,
   EdgeView,
+  FindingCategory,
+  FindingSeverity,
+  FindingSummaryView,
+  FindingView,
   GraphView,
   HealthStatus,
   JobCounters,
@@ -242,6 +246,57 @@ export const api = {
   graph: (repositoryId: Uuid, types?: string, revisionId?: Uuid, signal?: AbortSignal) =>
     request<GraphView>(
       `${API}/repositories/${repositoryId}/graph${query({ types, revisionId })}`,
+      { signal },
+    ),
+
+  // ---- static analysis ----
+
+  /**
+   * Submits a static-analysis job.
+   *
+   * Sends an empty JSON body: the endpoint accepts a body (an optional idempotency key)
+   * and rejects a request with no content type.
+   */
+  analyze: (repositoryId: Uuid, signal?: AbortSignal) =>
+    request<JobView>(`${API}/repositories/${repositoryId}/analyze`, {
+      method: "POST",
+      body: {},
+      signal,
+    }),
+
+  /** Counts and run header for a repository's findings. */
+  findingSummary: (repositoryId: Uuid, revisionId?: Uuid, signal?: AbortSignal) =>
+    request<FindingSummaryView>(
+      `${API}/repositories/${repositoryId}/findings/summary${query({ revisionId })}`,
+      { signal },
+    ),
+
+  /** A page of findings from one analysis run, which the server resolves when `runId` is absent. */
+  findings: (
+    repositoryId: Uuid,
+    options: {
+      runId?: Uuid | undefined;
+      severity?: FindingSeverity | undefined;
+      category?: FindingCategory | undefined;
+      analyzerId?: string | undefined;
+      path?: string | undefined;
+      text?: string | undefined;
+      page?: number | undefined;
+      size?: number | undefined;
+    } = {},
+    signal?: AbortSignal,
+  ) =>
+    request<PageResponse<FindingView>>(
+      `${API}/repositories/${repositoryId}/findings${query({
+        runId: options.runId,
+        severity: options.severity,
+        category: options.category,
+        analyzerId: options.analyzerId,
+        path: options.path,
+        q: options.text,
+        page: options.page,
+        size: options.size,
+      })}`,
       { signal },
     ),
 

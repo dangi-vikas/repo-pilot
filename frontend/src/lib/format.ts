@@ -1,4 +1,11 @@
-import type { CoverageView, JobStatus, ParseStatus, RepositoryStatus } from "@/lib/types";
+import type {
+  CoverageView,
+  FindingSeverity,
+  JobStatus,
+  ParseStatus,
+  RepositoryStatus,
+  VerificationStatus,
+} from "@/lib/types";
 
 /** A badge tone, mapped to the `.badge-*` classes. */
 export type Tone = "neutral" | "success" | "warning" | "danger" | "info" | "accent";
@@ -279,6 +286,56 @@ export function parseStatusTone(status: ParseStatus): Tone {
     case "SKIPPED":
       return "neutral";
   }
+}
+
+/**
+ * Badge tone for a finding's severity.
+ *
+ * Only `CRITICAL` and `HIGH` are a danger tone. If everything above low were red, the
+ * colour would stop carrying information, which is the failure mode of a severity scale
+ * rendered as decoration.
+ */
+export function severityTone(severity: FindingSeverity): Tone {
+  switch (severity) {
+    case "CRITICAL":
+    case "HIGH":
+      return "danger";
+    case "MEDIUM":
+      return "warning";
+    case "LOW":
+      return "info";
+    case "INFO":
+      return "neutral";
+  }
+}
+
+/** Badge tone for a finding's verification status. A stale citation is a rule defect. */
+export function verificationTone(status: VerificationStatus): Tone {
+  switch (status) {
+    case "SOURCE_CONFIRMED":
+      return "success";
+    case "LOCATION_STALE":
+      return "danger";
+    case "NO_LOCATION_CLAIMED":
+      return "neutral";
+  }
+}
+
+/**
+ * `path:line` for a finding, or just the path when no line was claimed.
+ *
+ * Never renders zero. A rule that reports line 0 is reported as claiming no line, and
+ * a citation of "line 0" is exactly the kind of plausible-looking nonsense that must not
+ * reach a reader.
+ */
+export function formatFindingLocation(
+  sourcePath: string | null | undefined,
+  startLine: number | null | undefined,
+): string {
+  if (!hasValue(sourcePath)) {
+    return "—";
+  }
+  return hasValue(startLine) && startLine > 0 ? `${sourcePath}:${startLine}` : sourcePath;
 }
 
 /**

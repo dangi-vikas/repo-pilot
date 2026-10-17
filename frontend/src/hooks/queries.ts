@@ -9,6 +9,10 @@ import type {
   AuthBootstrap,
   CoverageView,
   EdgeView,
+  FindingCategory,
+  FindingSeverity,
+  FindingSummaryView,
+  FindingView,
   GraphView,
   HealthStatus,
   JobCounters,
@@ -182,6 +186,69 @@ export function useGraph(repositoryId: Uuid | null, revisionId: Uuid | null) {
   });
 }
 
+// ---------------------------------------------------------------- analysis
+
+/** Optional filters for a findings query. `runId` absent means "the current run". */
+export interface FindingQuery {
+  runId?: Uuid | undefined;
+  severity?: FindingSeverity | undefined;
+  category?: FindingCategory | undefined;
+  analyzerId?: string | undefined;
+  path?: string | undefined;
+  text?: string | undefined;
+  page?: number | undefined;
+  size?: number | undefined;
+}
+
+/**
+ * Counts and run header for a repository's findings.
+ *
+ * The zero state is `total: 0` with no `runId`. The UI must not collapse that into the
+ * same thing as a run that found nothing, so the response keeps them distinguishable.
+ */
+export function useFindingSummary(repositoryId: Uuid | null, revisionId: Uuid | null) {
+  return useQuery<FindingSummaryView>({
+    queryKey: ["finding-summary", repositoryId, revisionId],
+    queryFn: ({ signal }) =>
+      api.findingSummary(repositoryId as Uuid, revisionId ?? undefined, signal),
+    enabled: repositoryId !== null,
+    ...guard(),
+  });
+}
+
+/**
+ * A page of findings.
+ *
+ * The query key spells out every filter rather than serialising an object: an unstable
+ * key would re-request on every render, and a missing filter in the key would show one
+ * filter's results under another's URL.
+ */
+export function useFindings(
+  repositoryId: Uuid | null,
+  filter: FindingQuery,
+  options: { enabled?: boolean; refetchWhileActive?: boolean } = {},
+) {
+  return useQuery<PageResponse<FindingView>>({
+    queryKey: [
+      "findings",
+      repositoryId,
+      filter.severity ?? "ALL",
+      filter.category ?? "ALL",
+      filter.analyzerId ?? "ALL",
+      filter.path ?? "ALL",
+      filter.text ?? "",
+      filter.page ?? 0,
+    ],
+    queryFn: ({ signal }) => api.findings(repositoryId as Uuid, filter, signal),
+    enabled: repositoryId !== null && options.enabled !== false,
+    // A run in flight changes the answers, so the list polls while one is. Otherwise it
+    // is not polled at all: a stale list is honest, a list that refreshes for no reason
+    // makes the reader wonder what changed.
+    refetchInterval: options.refetchWhileActive === true ? 3_000 : false,
+    ...guard(),
+  });
+}
+
 export function useJobs(status: JobStatus | undefined) {
   return useQuery<PageResponse<JobView>>({
     queryKey: ["jobs", status ?? "ALL"],
@@ -243,6 +310,20 @@ export function useCancelJob() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
       void queryClient.invalidateQueries({ queryKey: ["job-counters"] });
+    },
+  });
+}
+
+/** Submits a static-analysis job for the repository's newest revision. */
+export function useStartAnalysis(repositoryId: Uuid | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.analyze(repositoryId as Uuid),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["job-counters"] });
+      void queryClient.invalidateQueries({ queryKey: ["finding-summary", repositoryId] });
+      void queryClient.invalidateQueries({ queryKey: ["findings", repositoryId] });
     },
   });
 }

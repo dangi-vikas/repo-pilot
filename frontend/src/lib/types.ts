@@ -260,6 +260,99 @@ export interface CoverageView {
   mappingCount: number;
 }
 
+// ---------------------------------------------------------------- analysis
+
+/**
+ * How a claim was arrived at. The four values are the product's evidence discipline
+ * expressed as a type: a static finding is read from source, a runtime measurement is
+ * taken from a recorded run, and a hypothesis is a model's guess. Only an observation
+ * and a measurement are facts.
+ */
+export type EvidenceCategory =
+  | "OBSERVATION"
+  | "STATIC_FINDING"
+  | "RUNTIME_MEASUREMENT"
+  | "AI_HYPOTHESIS";
+
+export type FindingSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+
+/** How strongly the evidence supports the finding, independent of how bad it would be. */
+export type FindingConfidence = "CERTAIN" | "HIGH" | "MEDIUM" | "LOW";
+
+export type FindingCategory =
+  | "CORRECTNESS"
+  | "SECURITY"
+  | "PERFORMANCE"
+  | "CONCURRENCY"
+  | "RESOURCE"
+  | "MAINTAINABILITY"
+  | "STYLE";
+
+/**
+ * Whether the finding's cited location was checked against the analysed text.
+ *
+ * `LOCATION_STALE` is a defect in the rule, not in the code: the rule reported a line
+ * the file does not have. It is shown rather than hidden so the rule can be fixed.
+ */
+export type VerificationStatus =
+  | "SOURCE_CONFIRMED"
+  | "LOCATION_STALE"
+  | "NO_LOCATION_CLAIMED";
+
+export type AnalysisRunStatus = "RUNNING" | "SUCCEEDED" | "PARTIAL" | "FAILED" | "CANCELLED";
+
+/**
+ * A static-analysis finding.
+ *
+ * Optional fields are declared `?: T | null` because the backend omits nulls: an absent
+ * key and a null value both mean "not recorded", and only `hasValue` may test them.
+ * Line numbers are 1-based; a missing line is a file-level finding, never line zero.
+ */
+export interface FindingView {
+  id: Uuid;
+  runId?: Uuid | null;
+  analyzerId: string;
+  ruleId?: string | null;
+  findingType: string;
+  title: string;
+  summary?: string | null;
+  severity: FindingSeverity;
+  confidence: FindingConfidence;
+  category: FindingCategory;
+  evidenceCategory: EvidenceCategory;
+  verificationStatus: VerificationStatus;
+  sourcePath?: string | null;
+  startLine?: number | null;
+  endLine?: number | null;
+  impact?: string | null;
+  recommendedAction?: string | null;
+  limitations?: string | null;
+  symbolId?: Uuid | null;
+  createdAt?: string | null;
+}
+
+/**
+ * The header and counts for one analysis run.
+ *
+ * Every field describing the run is absent when the repository has never been analysed.
+ * That state has its own meaning — "nothing has been looked at" — and is deliberately
+ * not an error, so the UI must render it differently from "the run found nothing".
+ */
+export interface FindingSummaryView {
+  repositoryId: Uuid;
+  runId?: Uuid | null;
+  revisionId?: Uuid | null;
+  runStatus?: AnalysisRunStatus | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  analyzerVersions?: string | null;
+  runSummary?: string | null;
+  total: number;
+  bySeverity: Partial<Record<FindingSeverity, number>>;
+  byCategory: Partial<Record<FindingCategory, number>>;
+  byAnalyzer: Record<string, number>;
+}
+
 // ---------------------------------------------------------------- overview
 
 export interface AiStatus {
