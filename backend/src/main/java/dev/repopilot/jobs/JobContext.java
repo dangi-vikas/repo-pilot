@@ -46,6 +46,7 @@ public class JobContext {
     private final JobType jobType;
     private final UUID workspaceId;
     private final UUID repositoryId;
+    private final String parametersJson;
     private final Instant deadline;
     private final AtomicBoolean cancelFlag;
     private final AtomicBoolean timedOut = new AtomicBoolean(false);
@@ -57,12 +58,13 @@ public class JobContext {
     private final BiConsumer<ProgressUpdate, Boolean> progressSink;
 
     public JobContext(UUID jobId, JobType jobType, UUID workspaceId, UUID repositoryId,
-                      Instant deadline, AtomicBoolean cancelFlag,
+                      String parametersJson, Instant deadline, AtomicBoolean cancelFlag,
                       BiConsumer<ProgressUpdate, Boolean> progressSink) {
         this.jobId = jobId;
         this.jobType = jobType;
         this.workspaceId = workspaceId;
         this.repositoryId = repositoryId;
+        this.parametersJson = parametersJson;
         this.deadline = deadline;
         this.cancelFlag = cancelFlag;
         this.progressSink = progressSink;
@@ -84,6 +86,18 @@ public class JobContext {
     /** The repository the job operates on, or null for a job that is not repository-scoped. */
     public UUID repositoryId() {
         return repositoryId;
+    }
+
+    /**
+     * Whatever the submitter attached to the job, as JSON.
+     *
+     * <p>Opaque to the job system: it stores the string and hands it back. A handler that
+     * needs an input (a runtime artefact to read, a set of files to restrict to) reads it
+     * from here, and is responsible for validating it. Jobs submitted without parameters
+     * carry null, which is not an error.
+     */
+    public String parametersJson() {
+        return parametersJson;
     }
 
     public Instant deadline() {

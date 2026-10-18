@@ -249,7 +249,7 @@ public class JobDispatcher {
         try {
             JobHandler handler = registry.require(type);
             JobContext context = new JobContext(jobId, type, job.getWorkspaceId(), job.getRepositoryId(),
-                    deadline, cancelFlag,
+                    job.getParameters(), deadline, cancelFlag,
                     (update, force) -> claimService.persistProgress(jobId, update));
 
             context.progressNow(1, "Starting", "Preparing " + type.name().toLowerCase().replace('_', ' '));

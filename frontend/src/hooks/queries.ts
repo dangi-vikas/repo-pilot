@@ -19,10 +19,15 @@ import type {
   JobStatus,
   JobView,
   MappingView,
+  MetricKind,
   OverviewView,
   PageResponse,
   RepositorySummary,
   RevisionLookup,
+  RuntimeArtifactType,
+  RuntimeArtifactView,
+  RuntimeMeasurementView,
+  RuntimeSummaryView,
   SourceContentView,
   SourceFileView,
   SymbolView,
@@ -286,6 +291,104 @@ export function useReadiness() {
     // A readiness probe is what tells us the backend is alive; retrying it inside a
     // failed state only delays the honest "down" answer.
     retry: false,
+  });
+}
+
+// ---------------------------------------------------------------- runtime evidence
+
+/**
+ * The run header for a repository's runtime evidence.
+ *
+ * Polls while a runtime job is in flight, so a freshly analysed recording appears without
+ * a manual refresh. When nothing is running it is not polled: a stale measurement is
+ * honest, a number that changes for no visible reason is not.
+ */
+export function useRuntimeSummary(
+  repositoryId: Uuid | null,
+  runId: Uuid | null,
+  options: { refetchWhileActive?: boolean } = {},
+) {
+  return useQuery<RuntimeSummaryView>({
+    queryKey: ["runtime-summary", repositoryId, runId ?? "LATEST"],
+    queryFn: ({ signal }) =>
+      api.runtimeSummary(repositoryId as Uuid, runId ?? undefined, signal),
+    enabled: repositoryId !== null,
+    refetchInterval: options.refetchWhileActive === true ? 3_000 : false,
+    ...guard(),
+  });
+}
+
+export function useRuntimeArtifacts(repositoryId: Uuid | null, options: { refetchWhileActive?: boolean } = {}) {
+  return useQuery<PageResponse<RuntimeArtifactView>>({
+    queryKey: ["runtime-artifacts", repositoryId],
+    queryFn: ({ signal }) => api.runtimeArtifacts(repositoryId as Uuid, { size: 50 }, signal),
+    enabled: repositoryId !== null,
+    refetchInterval: options.refetchWhileActive === true ? 3_000 : false,
+    ...guard(),
+  });
+}
+
+/**
+ * A page of measurements.
+ *
+ * The query key spells out each filter rather than serialising the object, so a change in
+ * one filter cannot leave another filter's results displayed under the new heading.
+ */
+export function useRuntimeMeasurements(
+  repositoryId: Uuid | null,
+  filter: RuntimeMeasurementQuery,
+  options: { enabled?: boolean; refetchWhileActive?: boolean } = {},
+) {
+  return useQuery<PageResponse<RuntimeMeasurementView>>({
+    queryKey: [
+      "runtime-measurements",
+      repositoryId,
+      filter.runId ?? "LATEST",
+      filter.metric ?? "ALL",
+      filter.kind ?? "ALL",
+      filter.scope ?? "ALL",
+    ],
+    queryFn: ({ signal }) => api.runtimeMeasurements(repositoryId as Uuid, filter, signal),
+    enabled: repositoryId !== null && options.enabled !== false,
+    refetchInterval: options.refetchWhileActive === true ? 3_000 : false,
+    ...guard(),
+  });
+}
+
+/** Optional filters for a measurements query. */
+export interface RuntimeMeasurementQuery {
+  runId?: Uuid | undefined;
+  metric?: string | undefined;
+  kind?: MetricKind | undefined;
+  scope?: string | undefined;
+}
+
+/** Uploads a recording or dump. The file is the body; the server hashes and stores it. */
+export function useUploadArtifact(repositoryId: Uuid | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { file: File; artifactType?: RuntimeArtifactType | undefined }) =>
+      api.uploadArtifact(repositoryId as Uuid, input.file, input.artifactType),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["runtime-artifacts", repositoryId] });
+      // A re-upload of identical bytes is the same artefact, so the summary may already
+      // describe it; invalidate rather than assume.
+      void queryClient.invalidateQueries({ queryKey: ["runtime-summary", repositoryId] });
+    },
+  });
+}
+
+/** Queues an artefact's analysis as a durable job. */
+export function useAnalyzeArtifact(repositoryId: Uuid | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (artifactId: Uuid) => api.analyzeArtifact(repositoryId as Uuid, artifactId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["job-counters"] });
+      void queryClient.invalidateQueries({ queryKey: ["runtime-summary", repositoryId] });
+      void queryClient.invalidateQueries({ queryKey: ["runtime-artifacts", repositoryId] });
+    },
   });
 }
 

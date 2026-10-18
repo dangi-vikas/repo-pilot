@@ -20,6 +20,7 @@ import dev.repopilot.repository.RepositoryService;
 import dev.repopilot.repository.RepositoryStatus;
 import dev.repopilot.repository.RepositorySummary;
 import dev.repopilot.repository.RevisionLookup;
+import dev.repopilot.runtime.RuntimeService;
 import dev.repopilot.shared.error.RepoPilotException;
 import dev.repopilot.shared.reactive.Blocking;
 import jakarta.validation.Valid;
@@ -57,15 +58,18 @@ public class RepositoryController {
     private final JobService jobs;
     private final CodeIndexQueryService codeIndex;
     private final SourceFileReader sourceReader;
+    private final RuntimeService runtime;
 
     public RepositoryController(RepositoryService repositories,
                                 JobService jobs,
                                 CodeIndexQueryService codeIndex,
-                                SourceFileReader sourceReader) {
+                                SourceFileReader sourceReader,
+                                RuntimeService runtime) {
         this.repositories = repositories;
         this.jobs = jobs;
         this.codeIndex = codeIndex;
         this.sourceReader = sourceReader;
+        this.runtime = runtime;
     }
 
     @GetMapping("/{repositoryId}")
@@ -76,7 +80,13 @@ public class RepositoryController {
     @DeleteMapping("/{repositoryId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public Mono<Void> delete(@PathVariable UUID repositoryId) {
-        return Blocking.offloadVoid(() -> repositories.delete(repositoryId));
+        return Blocking.offloadVoid(() -> {
+            // The database delete commits when it returns; the recorded bytes are removed after,
+            // because filesystem work must not run inside a transaction (ADR 0006). A heap dump
+            // that outlived its repository would otherwise sit on disk indefinitely.
+            repositories.delete(repositoryId);
+            runtime.discardArtifacts(repositoryId);
+        });
     }
 
     /** Submits an indexing job. Returns immediately with the queued job. */

@@ -11,6 +11,7 @@ import { CodeExplorerPage } from "@/pages/CodeExplorerPage";
 import { DependencyGraphPage } from "@/pages/DependencyGraphPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { OverviewPage } from "@/pages/OverviewPage";
+import { PerformanceLabPage } from "@/pages/PerformanceLabPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { useActions } from "@/state/actions";
 import { useSession } from "@/state/session";
@@ -39,6 +40,8 @@ function elementFor(destinationId: string) {
       return <CodeExplorerPage />;
     case "graph":
       return <DependencyGraphPage />;
+    case "performance":
+      return <PerformanceLabPage />;
     case "history":
       return <AnalysisHistoryPage />;
     case "settings":

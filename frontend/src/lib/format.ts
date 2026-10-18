@@ -2,6 +2,7 @@ import type {
   CoverageView,
   FindingSeverity,
   JobStatus,
+  MeasurementAggregation,
   ParseStatus,
   RepositoryStatus,
   VerificationStatus,
@@ -163,6 +164,103 @@ export function formatCoverageSentence(coverage: CoverageView): string {
       : `${count} ${directories} not walked (${reasons})`);
   }
   return `${segments.join("; ")}.`;
+}
+
+/**
+ * Renders a measured value with its unit.
+ *
+ * A bare number is not a measurement: `2845456` says nothing, `2.71 MB` says something.
+ * The unit string comes from the backend and is never inferred here, because a client
+ * that guesses a unit is a client that can print the wrong one.
+ *
+ * Note `weight`: the recording's allocation samples carry a sampling weight, not a byte
+ * count. It is rendered as a number and explicitly labelled a weight so it can never be
+ * mistaken for a memory figure.
+ */
+export function formatMetricValue(value: number, unit: string): string {
+  if (!Number.isFinite(value)) {
+    return "—";
+  }
+  switch (unit) {
+    case "bytes":
+      return formatBytes(value);
+    case "ms":
+      return formatMillis(value);
+    case "%":
+      return `${value.toFixed(1)}%`;
+    case "count":
+      return formatNumber(value);
+    case "weight":
+      return `${formatNumber(value)} weight`;
+    default:
+      return `${formatNumber(value)} ${unit}`;
+  }
+}
+
+/** A millisecond figure at a readable scale, without inventing precision. */
+function formatMillis(ms: number): string {
+  const magnitude = Math.abs(ms);
+  if (magnitude >= 1000) {
+    return `${(ms / 1000).toFixed(2)} s`;
+  }
+  if (magnitude >= 10) {
+    return `${ms.toFixed(1)} ms`;
+  }
+  if (magnitude >= 1) {
+    return `${ms.toFixed(2)} ms`;
+  }
+  return `${ms.toFixed(3)} ms`;
+}
+
+/** The word for how a value's samples were reduced. */
+export function aggregationLabel(aggregation: MeasurementAggregation): string {
+  switch (aggregation) {
+    case "COUNT":
+      return "count";
+    case "SUM":
+      return "sum";
+    case "MEAN":
+      return "mean";
+    case "MAX":
+      return "max";
+  }
+}
+
+/**
+ * The reduction and its sample count: `max of 92 samples`.
+ *
+ * Rendered next to every value because `128 ms` and `128 ms (max of 92 samples)` support
+ * different conclusions, and only the second can be judged. A sample count of zero is not a
+ * missing value: it is the backend saying the figure reduces no samples at all (the recording's
+ * own window, for instance), and it must not be rendered as `max of 0 samples` — an arithmetic
+ * claim about an empty set rather than a description of one derived span.
+ */
+export function formatSampleScope(
+  aggregation: MeasurementAggregation,
+  sampleCount: number,
+): string {
+  if (sampleCount < 1) {
+    return "one derived value, not a reduction over samples";
+  }
+  const samples = sampleCount === 1 ? "1 sample" : `${formatNumber(sampleCount)} samples`;
+  return `${aggregationLabel(aggregation)} of ${samples}`;
+}
+
+/**
+ * The family segment of a metric key: `gc` from `jfr.gc.pause.max`.
+ *
+ * The backend groups by this segment in `byMetricFamily`, so the UI groups by the same
+ * rule rather than re-deriving one that could disagree with the counts it was given.
+ */
+export function metricFamily(metricKey: string): string {
+  const segments = metricKey.split(".");
+  return segments.length > 1 ? (segments[1] ?? metricKey) : metricKey;
+}
+
+/** The part of a metric key after its family: `pause.max` from `jfr.gc.pause.max`. */
+export function metricLeaf(metricKey: string): string {
+  const segments = metricKey.split(".");
+  return segments.length > 2 ? segments.slice(2).join(".") : metricKey;
 }
 
 export function formatInstant(instant: string | null | undefined): string {

@@ -353,6 +353,149 @@ export interface FindingSummaryView {
   byAnalyzer: Record<string, number>;
 }
 
+// ---------------------------------------------------------------- runtime evidence
+
+/**
+ * What kind of file a runtime artefact is.
+ *
+ * Only `JFR_RECORDING` can be read by this build. The others are accepted, stored and
+ * reported as unsupported with a reason, because throwing away evidence an operator
+ * already collected is worse than admitting the reader is not written yet.
+ */
+export type RuntimeArtifactType =
+  | "JFR_RECORDING"
+  | "HEAP_DUMP"
+  | "THREAD_DUMP"
+  | "BENCHMARK_RESULT";
+
+/**
+ * What kind of quantity a measurement is.
+ *
+ * This is not decoration: a `GAUGE` sampled once and a `COUNTER` summed over an
+ * interval mean different things, and a client that adds them together is wrong.
+ */
+export type MetricKind = "COUNTER" | "DURATION" | "GAUGE" | "SIZE";
+
+/**
+ * How the samples behind one value were reduced.
+ *
+ * There is deliberately no percentile here. A p99 cannot be derived from a stored max,
+ * so the backend does not pretend to have one, and neither does this type.
+ */
+export type MeasurementAggregation = "COUNT" | "SUM" | "MEAN" | "MAX";
+
+/** An uploaded runtime artefact, whether or not it can be read yet. */
+export interface RuntimeArtifactView {
+  id: Uuid;
+  repositoryId: Uuid;
+  artifactType: RuntimeArtifactType;
+  originalFilename: string;
+  contentHash: string;
+  sizeBytes: number;
+  /** The run that read it, if any has. Absent means "stored, never analysed". */
+  analysisRunId?: Uuid | null;
+  createdAt: Instant;
+  supported: boolean;
+  unsupportedReason?: string | null;
+  /**
+   * True for artefacts that contain process memory (heap and thread dumps). Drives the
+   * warning shown before such a file is uploaded anywhere.
+   */
+  containsProcessMemory: boolean;
+  measurementCount: number;
+}
+
+/**
+ * One measured quantity.
+ *
+ * The unit, the reduction and the sample count travel with the value, so a renderer
+ * cannot show a number without the context needed to read it.
+ */
+export interface RuntimeMeasurementView {
+  id: Uuid;
+  analysisRunId?: Uuid | null;
+  artifactId?: Uuid | null;
+  metricKey: string;
+  metricKind: MetricKind;
+  aggregation: MeasurementAggregation;
+  value: number;
+  unit: string;
+  sampleCount: number;
+  scope?: string | null;
+  /** Metric-specific caveats and shares, as JSON. Shown, never treated as decoration. */
+  attributesJson?: string | null;
+  createdAt: Instant;
+}
+
+/**
+ * The header for a repository's runtime evidence.
+ *
+ * `runId` absent means no recording has been analysed — a different answer from a run
+ * that measured nothing, and the two must not be collapsed in the UI.
+ */
+export interface RuntimeSummaryView {
+  repositoryId: Uuid;
+  runId?: Uuid | null;
+  artifactId?: Uuid | null;
+  artifactName?: string | null;
+  artifactType?: RuntimeArtifactType | null;
+  artifactHash?: string | null;
+  artifactSizeBytes?: number | null;
+  status?: AnalysisRunStatus | null;
+  startedAt?: Instant | null;
+  finishedAt?: Instant | null;
+  analyzerVersions?: string | null;
+  summary?: string | null;
+  measurementCount: number;
+  byKind: Partial<Record<MetricKind, number>>;
+  byMetricFamily: Record<string, number>;
+  /** The recording's environment: JVM, OS, CPU, memory, and the recording's own window. */
+  provenanceJson?: RuntimeProvenance | null;
+}
+
+/**
+ * The provenance document stored with an artefact.
+ *
+ * Mirrors exactly what the reader records and nothing more. The missing fields are the point:
+ * there is no `jvmArguments`, no `systemProperties` and no per-event setting, because RepoPilot
+ * does not read them — they are credential carriers, and a threshold or sampling period cannot be
+ * attributed to an event type through the JDK 21 consumer API. A type that offered those fields
+ * would invite a client to display them.
+ */
+export interface RuntimeProvenance {
+  environment?: {
+    jvmName?: string | null;
+    /** The JVM's full build string. Already begins with `jvmName`; shown verbatim, never merged. */
+    jvmVersion?: string | null;
+    jvmStartTime?: string | null;
+    processId?: number | null;
+    /** A multi-line description, kept as the JVM wrote it. */
+    osVersion?: string | null;
+    /** A multi-line CPU description, kept as the JVM wrote it. */
+    cpu?: string | null;
+    cpuCores?: number | null;
+    hardwareThreads?: number | null;
+    physicalMemoryBytes?: number | null;
+    physicalMemoryUsedBytes?: number | null;
+  };
+  recording?: {
+    name?: string | null;
+    startedAt?: string | null;
+    firstEventAt?: string | null;
+    lastEventAt?: string | null;
+    events?: number | null;
+    eventTypes?: number | null;
+  };
+  produced?: {
+    measurements?: number | null;
+    /** Always zero: this reader classifies nothing. Stated rather than left out. */
+    findings?: number | null;
+    thresholdsApplied?: boolean | null;
+  };
+  /** The reader's own prose about what these numbers do and do not mean. */
+  note?: string | null;
+}
+
 // ---------------------------------------------------------------- overview
 
 export interface AiStatus {

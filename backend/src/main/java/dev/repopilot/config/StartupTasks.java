@@ -3,6 +3,8 @@ package dev.repopilot.config;
 import dev.repopilot.jobs.AnalysisJob;
 import dev.repopilot.jobs.AnalysisJobRepository;
 import dev.repopilot.jobs.JobClaimService;
+import dev.repopilot.repository.RepositoryRepository;
+import dev.repopilot.runtime.ArtifactStore;
 import dev.repopilot.workspace.WorkspaceService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,6 +20,8 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Stream;
 
 /**
@@ -38,10 +42,13 @@ import java.util.stream.Stream;
  *   <li><b>Temporary files.</b> Scratch directories left by a previous run are removed,
  *       so disk is not consumed by abandoned intermediate state. Files are removed
  *       only inside RepoPilot's own temp directory, and only after a containment check.</li>
+ *   <li><b>Orphaned artefacts.</b> A stored recording or dump whose repository is no longer in
+ *       the database is removed. This is the second half of a repository deletion: the rows go
+ *       when the user asks, the bytes go after that, and a crash in between would otherwise strand
+ *       them. Only directories named after a repository id the database does not know are
+ *       touched; nothing is pruned by age, because nothing in this build prunes by age yet
+ *       (see docs/security.md, "Artefacts and retention").</li>
  * </ol>
- *
- * <p>Deliberately does <em>not</em> touch uploaded runtime artefacts: those are user
- * data and are governed by the retention policy, not by startup cleanup.
  */
 @Component
 @Order(10)
@@ -53,6 +60,8 @@ public class StartupTasks implements ApplicationRunner {
     private final AnalysisJobRepository jobs;
     private final JobClaimService claimService;
     private final StorageInitializer storage;
+    private final RepositoryRepository repositories;
+    private final ArtifactStore artifacts;
     private final RepoPilotProperties properties;
     private final Clock clock;
 
@@ -60,12 +69,16 @@ public class StartupTasks implements ApplicationRunner {
                         AnalysisJobRepository jobs,
                         JobClaimService claimService,
                         StorageInitializer storage,
+                        RepositoryRepository repositories,
+                        ArtifactStore artifacts,
                         RepoPilotProperties properties,
                         Clock clock) {
         this.workspaces = workspaces;
         this.jobs = jobs;
         this.claimService = claimService;
         this.storage = storage;
+        this.repositories = repositories;
+        this.artifacts = artifacts;
         this.properties = properties;
         this.clock = clock;
     }
@@ -76,6 +89,35 @@ public class StartupTasks implements ApplicationRunner {
         reconcileInterruptedJobs();
         if (properties.storage().cleanupTempOnStartup()) {
             cleanTemporaryFiles();
+        }
+        sweepOrphanedArtifacts();
+    }
+
+    /**
+     * Removes stored artefacts whose repository no longer exists.
+     *
+     * <p>Asks the store what it holds rather than the database what it recorded, because the
+     * interesting case is the one the database cannot answer: a directory that no record points
+     * at. A repository deleted a moment before a crash, or through a path that does not clean up
+     * after itself, is found here.
+     */
+    private void sweepOrphanedArtifacts() {
+        Set<UUID> stored = artifacts.storedRepositoryIds();
+        if (stored.isEmpty()) {
+            return;
+        }
+        int removed = 0;
+        for (UUID repositoryId : stored) {
+            if (repositories.existsById(repositoryId)) {
+                continue;
+            }
+            int files = artifacts.discardRepository(repositoryId);
+            removed += files;
+            log.info("removed {} orphaned artefact file(s) for repository {}, which no longer exists",
+                    files, repositoryId);
+        }
+        if (removed > 0) {
+            log.info("artefact sweep removed {} orphaned file(s) in total", removed);
         }
     }
 

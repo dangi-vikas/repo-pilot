@@ -29,6 +29,23 @@ spring:
     baseline-on-migrate: false
   codec:
     max-in-memory-size: 16MB
+  webflux:
+    multipart:
+      # Uploads are streamed to disk, never accumulated in memory: a heap dump can be larger
+      # than the JVM's own heap.
+      #
+      # Size is then bounded in two places, on purpose:
+      #   - max-disk-usage-per-part stops an oversized stream while it is being written, so a
+      #     client cannot fill the disk before anything gets to complain. It is deliberately
+      #     set above repopilot.analysis.max-artifact-size-bytes: the framework's refusal is
+      #     abrupt and hard to word well, so it is the backstop.
+      #   - RuntimeService checks the landed file against the configured artefact limit, which
+      #     is the number the API documents, and refuses with the exact size and the exact limit.
+      # A file between the two numbers is read, then rejected by name; a file past both is cut
+      # off mid-stream. Raise them together, or only the first is raised.
+      max-in-memory-size: 256KB
+      max-disk-usage-per-part: ${REPOPILOT_MAX_PART_DISK_BYTES:2147483648}
+      max-parts: 8
   mvc:
     problemdetails:
       enabled: false

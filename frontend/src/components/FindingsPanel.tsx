@@ -329,63 +329,53 @@ export function FindingsPanel({
               />
             ) : (
               <>
-                <div className="table-wrap">
-                  <table className="data">
-                    <thead>
-                      <tr>
-                        <th>Severity</th>
-                        <th>Rule</th>
-                        <th>Finding</th>
-                        <th>Location</th>
-                        <th>Confidence</th>
-                        <th>Verified</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {findings.data?.items.map((finding) => (
-                        <tr
-                          key={finding.id}
-                          className={
-                            finding.id === selected?.id ? "clickable selected" : "clickable"
-                          }
-                          onClick={() => setSelected(finding)}
-                        >
-                          <td>
-                            <Badge tone={severityTone(finding.severity)} dot>
-                              {finding.severity}
-                            </Badge>
-                          </td>
-                          <td className="rp-mono rp-truncate" style={{ maxWidth: 150 }}>
+                {/*
+                  A list rather than a table. This panel lives in the explorer's right-hand
+                  pane, which is about 500px wide: a six-column table there pushed the
+                  citation — the one column a reader checks first — off the edge. Each row
+                  now carries its severity, rule, citation and citation verdict by itself.
+                */}
+                <ul className="findings-list">
+                  {findings.data?.items.map((finding) => (
+                    <li key={finding.id}>
+                      <button
+                        type="button"
+                        className={
+                          finding.id === selected?.id ? "finding-row selected" : "finding-row"
+                        }
+                        aria-pressed={finding.id === selected?.id}
+                        onClick={() => setSelected(finding)}
+                      >
+                        <span className="finding-row-head">
+                          <Badge tone={severityTone(finding.severity)} dot>
+                            {finding.severity}
+                          </Badge>
+                          <span className="rp-mono finding-row-rule">
                             {finding.ruleId ?? finding.findingType}
-                          </td>
-                          <td>
-                            <div>{finding.title}</div>
-                            <div className="rp-faint rp-truncate" style={{ maxWidth: 420, fontSize: "var(--text-xs)" }}>
-                              {finding.summary ?? ""}
-                            </div>
-                          </td>
-                          <td className="rp-mono rp-truncate" style={{ maxWidth: 260 }}>
-                            {formatFindingLocation(finding.sourcePath, finding.startLine)}
-                          </td>
-                          <td>
-                            <span className="rp-faint" style={{ fontSize: "var(--text-xs)" }}>
-                              {finding.confidence}
-                            </span>
-                          </td>
-                          <td>
-                            <Badge tone={verificationTone(finding.verificationStatus)}>
-                              {finding.verificationStatus === "SOURCE_CONFIRMED"
-                                ? "confirmed"
-                                : finding.verificationStatus === "LOCATION_STALE"
-                                  ? "stale"
-                                  : "no line"}
-                            </Badge>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                          </span>
+                          <span className="rp-spacer" />
+                          {/* The verdict on the citation sits next to the citation itself: a
+                              line number whose text was not checked must never look like one
+                              whose text was. */}
+                          <Badge tone={verificationTone(finding.verificationStatus)}>
+                            {finding.verificationStatus === "SOURCE_CONFIRMED"
+                              ? "line confirmed"
+                              : finding.verificationStatus === "LOCATION_STALE"
+                                ? "line stale"
+                                : "no line"}
+                          </Badge>
+                        </span>
+                        <span className="finding-row-title">{finding.title}</span>
+                        {hasValue(finding.summary) ? (
+                          <span className="finding-row-summary">{finding.summary}</span>
+                        ) : null}
+                        <span className="finding-row-cite rp-mono">
+                          {formatFindingLocation(finding.sourcePath, finding.startLine)}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
 
                 <div className="rp-row" style={{ marginTop: "var(--space-3)" }}>
                   <span className="rp-faint" style={{ fontSize: "var(--text-xs)" }}>
@@ -467,7 +457,11 @@ function FindingDetail({
         <Badge tone="neutral">{finding.ruleId ?? finding.findingType}</Badge>
         <Badge tone="neutral">{titleCase(finding.category)}</Badge>
         <Badge tone="neutral">{titleCase(finding.confidence)} confidence</Badge>
-        <Badge tone="neutral">{location}</Badge>
+        {/*
+          Not a Badge: badges uppercase their contents, and a path is case-sensitive. A
+          citation printed as SRC/MAIN/... is not the path that was analysed.
+        */}
+        <span className="finding-row-cite rp-mono">{location}</span>
       </div>
       {hasValue(finding.summary) ? (
         <p className="rp-muted" style={{ fontSize: "var(--text-sm)", marginBottom: "var(--space-3)" }}>

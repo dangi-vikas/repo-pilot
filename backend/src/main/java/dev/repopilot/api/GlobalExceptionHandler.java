@@ -131,6 +131,24 @@ public class GlobalExceptionHandler {
                 path(exchange)));
     }
 
+    @ExceptionHandler(org.springframework.core.io.buffer.DataBufferLimitException.class)
+    public ResponseEntity<ApiErrorResponse> handleBufferLimit(
+            org.springframework.core.io.buffer.DataBufferLimitException ex, ServerWebExchange exchange) {
+        // Raised by the framework, not by RepoPilot: a request body or a multipart part passed a
+        // limit configured in application.yml. The framework's own wording names the internal
+        // property and number, which is not the contract, so it is replaced — but the guidance is
+        // kept, because "the upload is too big" without the name of the knob to turn is a dead end.
+        log.warn("request exceeded a buffer limit [{}]: {}", path(exchange), ex.getMessage());
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(ApiErrorResponse.of(
+                ErrorCode.LIMIT_EXCEEDED.name(),
+                "The upload exceeded the server's limit for a single request and was cut off before it "
+                        + "arrived in full. Raise spring.webflux.multipart.max-disk-usage-per-part "
+                        + "(or spring.codec.max-in-memory-size for a request body), or upload less.",
+                HttpStatus.PAYLOAD_TOO_LARGE.value(),
+                Correlation.current(exchange),
+                path(exchange)));
+    }
+
     @ExceptionHandler(ResponseStatusException.class)
     public ResponseEntity<ApiErrorResponse> handleStatus(ResponseStatusException ex,
                                                          ServerWebExchange exchange) {

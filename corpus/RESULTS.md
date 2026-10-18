@@ -164,6 +164,39 @@ This repository has no non-Java files, which is why the inspected and read count
 here. It is the case where "0 excluded" is a true statement, and it is worth having that
 case next to the corpus case where it is not.
 
+## Static analysis over the same corpus
+
+Recorded 2026-10-18 on the same host, same corpus revision, with
+`scripts/measure-analysis.ps1` (which reads the result back through the public API instead of
+trusting the job's own summary):
+
+| Metric | Value |
+| --- | --- |
+| Files analysed | 3 002 (PMD and the built-in rules) |
+| Files skipped, with reason | 1 (`application.properties`: no analyzer for the language) |
+| Findings | 600, all `pmd/ClassNamingConventions`, all `HIGH`, all `SOURCE_CONFIRMED` |
+| Analysis span | 118.17 s (≈25 files/s) |
+| Peak process working set | 770.5 MiB (OS-observed) |
+| Peak private bytes | 814.5 MiB |
+| Average CPU | 8.9 % of 12 logical cores |
+| Database size afterwards | 76.7 MiB (73 MiB after indexing) |
+
+The count was checked a second way, because a round number is either the whole truth or a
+truncation: the corpus contains exactly 600 enum declarations whose names do not match
+`[A-Z][a-zA-Z0-9]*`, which is precisely what that PMD rule reports. Nothing was dropped.
+
+One file was reported rather than analysed: PMD could not parse the deliberately broken
+`_SyntaxBreak.java`. The run recorded that in its summary and still succeeded, because the
+authoritative statement that the file does not parse is the index's own
+`PARSED_WITH_PROBLEMS` status — the analysis engine repeating it is a coverage fact, not a
+run-level failure.
+
+The corpus is a scale fixture and the numbers above are scale numbers. It was generated for
+indexing volume, so one rule accounts for every finding. Rule-variety evidence comes from
+`fixtures/quality-demo` instead: 3 files, 14 findings (10 from the built-in rules, 4 from PMD),
+every built-in rule firing exactly once, one clean file with nothing, and a fake credential
+whose value appears in no finding.
+
 ## What these numbers do not say
 
 - **They are not PostgreSQL numbers.** The recorded runs used H2 in

@@ -12,19 +12,6 @@ interface Plan {
 }
 
 const PLANS: Record<string, Plan> = {
-  performance: {
-    blockedBy: "No JFR ingestion or benchmark import handler exists yet, so this screen cannot show a single measurement.",
-    exists: [
-      "The durable job lifecycle this will run on: queued, running, cancelable, retryable, with progress and heartbeats.",
-      "A per-revision symbol index with line ranges, which is what lets a hot method be attributed to a real source location instead of a stack frame name.",
-    ],
-    planned: [
-      "Record or import a JFR file and parse it locally with the JDK's Flight Recorder API — no agent, no upload.",
-      "Attribute hot methods and allocation sites to indexed symbols, and store the recording's own parameters with every number so a measurement can always be traced to its run.",
-      "Import JMH results as measurements rather than estimates, with the JVM and machine recorded alongside them.",
-    ],
-    jobTypes: ["JFR_ANALYSIS", "BENCHMARK_IMPORT"],
-  },
   memory: {
     blockedBy: "Heap dump parsing is not implemented, so there is nothing measured to display.",
     exists: [

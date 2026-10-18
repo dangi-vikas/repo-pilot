@@ -54,7 +54,7 @@ export const DESTINATIONS: Destination[] = [
     icon: "gauge",
     section: "Performance",
     description: "JFR recordings and benchmark results, measured — not guessed.",
-    available: false,
+    available: true,
   },
   {
     id: "memory",

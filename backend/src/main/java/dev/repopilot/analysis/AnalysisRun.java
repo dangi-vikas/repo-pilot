@@ -70,6 +70,29 @@ public class AnalysisRun implements Persistable<UUID> {
     @Column(name = "finding_count", nullable = false)
     private int findingCount;
 
+    @Column(name = "measurement_count", nullable = false)
+    private int measurementCount;
+
+    /**
+     * The runtime artefact this run read, when it read one.
+     *
+     * <p>Stored on the run as well as on the artefact so that a run is self-describing: a
+     * reader looking at "why did this run report a 128 ms GC pause" gets the recording's
+     * name, hash and location without a join, and the hash is what proves the file has not
+     * been swapped underneath the measurement.
+     */
+    @Column(name = "artifact_name", length = 500)
+    private String artifactName;
+
+    @Column(name = "artifact_hash", length = 128)
+    private String artifactHash;
+
+    @Column(name = "artifact_size_bytes")
+    private Long artifactSizeBytes;
+
+    @Column(name = "artifact_ref", length = 1000)
+    private String artifactRef;
+
     @Column(name = "started_at", nullable = false, updatable = false)
     private Instant startedAt;
 
@@ -105,11 +128,34 @@ public class AnalysisRun implements Persistable<UUID> {
     /** Closes the run with what actually happened, including how many findings it produced. */
     public void complete(AnalysisRunStatus finalStatus, String analyzerVersions, String summary,
                          int findingCount, Instant finishedAt) {
+        complete(finalStatus, analyzerVersions, summary, findingCount, 0, finishedAt);
+    }
+
+    /**
+     * Closes a run that produced measurements rather than findings.
+     *
+     * <p>Both counts exist because a runtime run that reported zero findings has not found
+     * nothing &mdash; it produced a different kind of evidence. Collapsing them into one
+     * number would make "the recording showed nothing" indistinguishable from "the analyzers
+     * had nothing to say", which is exactly the confusion the evidence model exists to
+     * prevent.
+     */
+    public void complete(AnalysisRunStatus finalStatus, String analyzerVersions, String summary,
+                         int findingCount, int measurementCount, Instant finishedAt) {
         this.status = finalStatus;
         this.analyzerVersions = analyzerVersions;
         this.summary = summary;
         this.findingCount = findingCount;
+        this.measurementCount = measurementCount;
         this.finishedAt = finishedAt;
+    }
+
+    /** Records which artefact the run read. Called once, when the run starts. */
+    public void attachArtifact(String artifactName, String artifactHash, Long artifactSizeBytes, String artifactRef) {
+        this.artifactName = artifactName;
+        this.artifactHash = artifactHash;
+        this.artifactSizeBytes = artifactSizeBytes;
+        this.artifactRef = artifactRef;
     }
 
     public UUID getId() {
@@ -146,6 +192,26 @@ public class AnalysisRun implements Persistable<UUID> {
 
     public int getFindingCount() {
         return findingCount;
+    }
+
+    public int getMeasurementCount() {
+        return measurementCount;
+    }
+
+    public String getArtifactName() {
+        return artifactName;
+    }
+
+    public String getArtifactHash() {
+        return artifactHash;
+    }
+
+    public Long getArtifactSizeBytes() {
+        return artifactSizeBytes;
+    }
+
+    public String getArtifactRef() {
+        return artifactRef;
     }
 
     public Instant getStartedAt() {

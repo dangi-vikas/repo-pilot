@@ -165,6 +165,24 @@ report said nothing had been excluded — which is exactly the kind of silent ga
 the guarantee below unverifiable. The counts now come from the scan manifest
 (`V2__revision_scan_accounting.sql`) and are asserted by integration tests.
 
+### What analysis does with the source it is allowed to read
+
+The name-based exclusion decides what RepoPilot *reads*; the analyzers decide what RepoPilot
+*repeats*. Three rules keep the second half as narrow as the first:
+
+- **A rule that finds a credential never stores the value.** `RP005` records the location and
+  the *name* of the field or variable, and its own message says the value is deliberately not
+  recorded. The smoke test asserts that the fixture's fake secret appears nowhere in the raw
+  findings JSON while the field name it was assigned to does — the check that stops a secret
+  scanner from becoming a second copy of the secret it found.
+- **PMD is handed content, not paths.** The engine's file collector is never used: text goes in
+  through `TextFile.forCharSeq(content, FileId.fromPathLikeString(path), version)`. PMD cannot
+  open a file RepoPilot did not open, cannot follow a symlink, and cannot reach a file the
+  scanner excluded, because it is never given a handle to one.
+- **No classpath, no execution.** PMD runs single-threaded, in process, with no classpath and
+  with its incremental cache disabled. Analysis loads Java source as text; it never compiles,
+  loads or executes repository code.
+
 ---
 
 ## 6. Prompt injection and untrusted content in prompts
@@ -231,15 +249,53 @@ prompts is off by default (`repopilot.privacy.log-source-content=false`,
 
 ## 9. Artefacts and retention
 
-- Uploaded runtime artefacts (JFR recordings, heap/thread dumps, benchmark files) are
-  stored by reference under the data directory and are capped in size
-  (`repopilot.analysis.max-artifact-size-bytes`).
-- Artefacts are content-hashed so the same upload is not duplicated and so a run's
-  inputs are identifiable.
-- A retention task prunes artefacts and runs older than `repopilot.storage.retention-days`
-  (default 30; 0 disables pruning).
-- Deleting a repository cascades deletion of everything derived from it, at the database
-  level and on disk.
+Uploaded runtime artefacts (JFR recordings, heap/thread dumps, benchmark files) are written under
+`<data-dir>/artifacts` and are **never executed** and never read by anything except the reader
+that claims to understand them.
+
+**Where the bytes go.** A stored artefact lives at
+`<data-dir>/artifacts/<repositoryId>/<hash[0..2]>/<sha256>.<extension>`. The path is derived from
+the repository id and the content hash, so nothing about it comes from the client. The filename the
+client sent is stored as a **display label only**: `../../etc/passwd.jfr` is recorded as
+`passwd.jfr` and stored under its hash. Uploading the same bytes twice keeps the first artefact —
+identity is the content, not the name.
+
+**Size is bounded in two places, deliberately.**
+
+| Limit | Default | Enforced | What it is for |
+| --- | --- | --- | --- |
+| `spring.webflux.multipart.max-disk-usage-per-part` (`REPOPILOT_MAX_PART_DISK_BYTES`) | 2 GiB | While the part is being written | Stops an oversized stream before it can fill the disk |
+| `repopilot.analysis.max-artifact-size-bytes` | 1 GiB | On the landed file | The published limit; refusal names the exact size and the exact limit |
+
+The framework limit is set above the application limit on purpose: a file between the two is read
+and then refused with a message that names both numbers, while a file past both is cut off
+mid-stream. The two must be raised together. A refusal is `413 LIMIT_EXCEEDED`, nothing is stored,
+and the scratch file is deleted.
+
+**Reading is header-checked first.** A JFR recording starts with the bytes `FLR\0`; a gzip stream
+starts with `1F 8B`. The header is checked before any `jdk.jfr` object is created, because the JDK's
+`RecordingFile` leaks a file handle when it fails to parse (see `docs/adr/0008-runtime-evidence.md`).
+A file that fails the check is refused by name, and a compressed recording is told to be
+decompressed rather than being called "not a recording".
+
+**Deleting a repository deletes its artefacts.** The records are removed in a transaction; the bytes
+are removed after it commits, because filesystem work must not run inside a database transaction
+(ADR 0006). A startup sweep then removes any artefact directory whose repository id is not in the
+database, which covers a deletion that was interrupted between the two steps. This matters because a
+heap dump contains process memory: "deleted" has to mean deleted, not "no longer listed".
+
+**Retention by age is not implemented.** This is a gap, stated plainly:
+
+- `repopilot.storage.retention-days` (default 30) is **bound and unused**. Nothing reads it.
+- The `ARTIFACT_RETENTION` job type is declared and has **no handler**, so it cannot be submitted.
+- Consequence: an artefact whose repository still exists is never pruned by age. It stays until the
+  repository is deleted or the file is removed by hand.
+
+**Database deletion cascades; artefact bytes do not, except as described above.** Deleting a
+workspace removes its repositories' rows at the database level; their artefact directories are
+removed the next time RepoPilot starts, by the same orphan sweep. Deleting a repository removes
+both immediately.
+
 
 ---
 
@@ -253,8 +309,15 @@ prompts is off by default (`repopilot.privacy.log-source-content=false`,
 - Credential files are never opened.
 - Every credential-file exclusion is counted and reported per revision, so the boundary's
   operation is auditable rather than assumed.
+- No static-analysis finding stores the value of a credential it reports.
+- Every stored static finding's cited location was checked against the text that was analysed
+  before it was written.
 - Model output never executes and never names an unvalidated location.
 - No source leaves the machine unless the operator explicitly enables a cloud provider.
+- A recording never leaves the machine: it is read in process, under content-addressed storage
+  that no client-supplied name can influence.
+- Every upload is bounded twice, and a refusal stores nothing and leaves no scratch file.
+- Deleting a repository removes its stored artefacts, not only its records.
 
 **Not guaranteed**
 
@@ -263,11 +326,21 @@ prompts is off by default (`repopilot.privacy.log-source-content=false`,
   redaction is a mitigation, not a proof).
 - Multi-user isolation; RepoPilot is a single-operator tool.
 - Resistance to a compromised JVM or operating system.
-- **The AI-related guarantees are design rules, not live behaviour.** The investigation
-  flow, static analysis and runtime-artefact analysis are not implemented; their controls
-  (prompt delimiting, citation validation, redaction before persistence) are described here
-  as requirements for the implementation. The read boundary and the authentication boundary
-  *are* enforced and tested.
+- **The AI-related guarantees are design rules, not live behaviour.** The investigation flow
+  is not implemented, so prompt delimiting, output citation validation and redaction before
+  persistence are described here as requirements for it. The analysis-related controls in this
+  document *are* enforced and tested: the read boundary, the credential handling of `RP005`,
+  the in-process engine with no classpath, and the citation check on every stored finding.
+- **Analysis reads source as text and repeats what it finds.** A secret written in a file whose
+  name is not credential-like will be read, and a rule may report its location (never its
+  value). Redaction is a mitigation, not a proof.
+- **Artefacts are never pruned by age.** `retention-days` is bound but unused and
+  `ARTIFACT_RETENTION` has no handler, so a recording outlives its usefulness until its repository
+  is deleted. Stated again here because a retention setting that looks configured but does nothing
+  is exactly the kind of false assurance this document exists to avoid.
+- **An uploaded dump is stored, not sandboxed.** A heap dump is process memory in a file. RepoPilot
+  does not read the ones it cannot parse, but it does write them to disk under the data directory,
+  where they are protected by the filesystem's own permissions and nothing else.
 
 ## Reporting a vulnerability
 

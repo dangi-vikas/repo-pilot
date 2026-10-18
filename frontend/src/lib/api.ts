@@ -14,10 +14,15 @@ import type {
   JobStatus,
   JobView,
   MappingView,
+  MetricKind,
   OverviewView,
   PageResponse,
   RepositorySummary,
   RevisionLookup,
+  RuntimeArtifactType,
+  RuntimeArtifactView,
+  RuntimeMeasurementView,
+  RuntimeSummaryView,
   SourceContentView,
   SourceFileView,
   SymbolView,
@@ -48,6 +53,12 @@ export class ApiError extends Error {
 interface RequestOptions {
   method?: string | undefined;
   body?: unknown;
+  /**
+   * A multipart body. Set instead of `body`: the browser must choose the
+   * `Content-Type` itself so the multipart boundary in the header matches the one in
+   * the payload, and the file must not be serialised as JSON.
+   */
+  form?: FormData | undefined;
   /** Skip attaching the bearer token (only for the public bootstrap/health endpoints). */
   anonymous?: boolean | undefined;
   signal?: AbortSignal | undefined;
@@ -66,7 +77,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   const init: RequestInit = { method: options.method ?? "GET", headers };
-  if (options.body !== undefined) {
+  if (options.form !== undefined) {
+    init.body = options.form;
+  } else if (options.body !== undefined) {
     init.body = JSON.stringify(options.body);
   }
   if (options.signal) {
@@ -297,6 +310,94 @@ export const api = {
         page: options.page,
         size: options.size,
       })}`,
+      { signal },
+    ),
+
+  // ---- runtime evidence ----
+
+  /**
+   * Uploads a recording or dump.
+   *
+   * Sent as multipart and never as JSON: the file is the payload, and the backend
+   * streams the part to disk so a recording larger than the browser tab's memory can
+   * still be uploaded. The filename travels as a label only — the server stores the
+   * bytes under their content hash.
+   */
+  uploadArtifact: (
+    repositoryId: Uuid,
+    file: File,
+    artifactType?: RuntimeArtifactType | undefined,
+    signal?: AbortSignal,
+  ) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<RuntimeArtifactView>(
+      `${API}/repositories/${repositoryId}/runtime/artifacts${query({ artifactType })}`,
+      { method: "POST", form, signal },
+    );
+  },
+
+  /** Artefacts uploaded for a repository, newest first. */
+  runtimeArtifacts: (
+    repositoryId: Uuid,
+    options: { page?: number | undefined; size?: number | undefined } = {},
+    signal?: AbortSignal,
+  ) =>
+    request<PageResponse<RuntimeArtifactView>>(
+      `${API}/repositories/${repositoryId}/runtime/artifacts${query({
+        page: options.page,
+        size: options.size ?? 50,
+      })}`,
+      { signal },
+    ),
+
+  runtimeArtifact: (repositoryId: Uuid, artifactId: Uuid, signal?: AbortSignal) =>
+    request<RuntimeArtifactView>(
+      `${API}/repositories/${repositoryId}/runtime/artifacts/${artifactId}`,
+      { signal },
+    ),
+
+  /**
+   * Queues the analysis of an uploaded artefact.
+   *
+   * Sends an empty JSON body for the same reason `analyze` does: the endpoint accepts a
+   * body (an optional idempotency key) and rejects a request with no content type.
+   */
+  analyzeArtifact: (repositoryId: Uuid, artifactId: Uuid, signal?: AbortSignal) =>
+    request<JobView>(
+      `${API}/repositories/${repositoryId}/runtime/artifacts/${artifactId}/analyze`,
+      { method: "POST", body: {}, signal },
+    ),
+
+  /** A page of measurements from one run. `runId` absent means the newest runtime run. */
+  runtimeMeasurements: (
+    repositoryId: Uuid,
+    options: {
+      runId?: Uuid | undefined;
+      metric?: string | undefined;
+      kind?: MetricKind | undefined;
+      scope?: string | undefined;
+      page?: number | undefined;
+      size?: number | undefined;
+    } = {},
+    signal?: AbortSignal,
+  ) =>
+    request<PageResponse<RuntimeMeasurementView>>(
+      `${API}/repositories/${repositoryId}/runtime/measurements${query({
+        runId: options.runId,
+        metric: options.metric,
+        kind: options.kind,
+        scope: options.scope,
+        page: options.page,
+        size: options.size ?? 200,
+      })}`,
+      { signal },
+    ),
+
+  /** The run header and breakdown for a repository's runtime evidence. */
+  runtimeSummary: (repositoryId: Uuid, runId?: Uuid, signal?: AbortSignal) =>
+    request<RuntimeSummaryView>(
+      `${API}/repositories/${repositoryId}/runtime/summary${query({ runId })}`,
       { signal },
     ),
 
