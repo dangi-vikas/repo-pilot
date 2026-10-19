@@ -292,7 +292,7 @@ render time:
 | --- | --- | --- |
 | **Observation** | A confirmed fact read from the repository: a file exists, a symbol is declared, an endpoint is mapped. | Highest |
 | **Static finding** | An analyzer conclusion about code (PMD, SpotBugs, custom checks). | High, with a named rule and location |
-| **Runtime measurement** | Data from a JFR recording, thread dump, or benchmark run: a quantity observed while a process ran, with its unit, its reduction and its sample count. | High, as a measurement of one run in one environment |
+| **Runtime measurement** | Data from a JFR recording, a thread dump, a heap dump, or a benchmark run: a quantity observed while a process ran, or read out of a file it wrote, with its unit, its reduction and its sample count. | High, as a measurement of one run in one environment |
 | **AI hypothesis** | Model-generated interpretation. | Lowest; must cite validated evidence |
 
 The `finding` table stores `evidence_category` as a mandatory column, so an AI hypothesis
@@ -414,6 +414,104 @@ Four properties of this flow are load-bearing:
    between the two steps is still completed. Neither path is a retention policy: nothing prunes
    by age, and the documentation says so.
 
+### How a thread dump is read
+
+The same run lifecycle, a different reader and a different set of judgements. The path is
+deliberately the same shape, because the second reader is what made the shape explicit:
+
+```text
+POST /repositories/{id}/runtime/artifacts          ← same endpoint, same content-addressed store
+  │  the format check happens here, at upload: a file must look like a plain-text dump
+  │  (`Full thread dump …`) or a thin Thread.dump_to_file shape that is refused by name
+  ▼
+POST /repositories/{id}/runtime/artifacts/{artifactId}/analyze
+  ▼
+job row (THREAD_DUMP_ANALYSIS, QUEUED)
+  ▼
+AbstractRuntimeAnalysisHandler.execute()           ← the lifecycle, in one place
+  │  1. repository id → artefact → type → supported?, or refuse before any run exists
+  │  2. analysis_run row: RUNNING, reader version ('thread-dump-reader=1.0.0')
+  │  3. ThreadDumpAnalysisJobHandler.analyse(path, …)
+  │       ThreadDumpReader    → ThreadDumpReport   (streaming; checkpointed for cancellation)
+  │       ThreadDumpMeasurementMapper → List<MeasurementDraft>   (pure function)
+  │  4. persist the drafts in one batch, with the run and artefact ids
+  │  5. analysis_run → SUCCEEDED | FAILED | CANCELLED, with the summary and provenance
+  ▼
+GET /repositories/{id}/runtime/measurements?metric=threaddump&runId=…    ← the Concurrency Inspector
+```
+
+What is specific to a dump, and why:
+
+1. **The format is decided before the run exists.** A thin `Thread.dump_to_file` file is refused
+   with `422`, naming the command that wrote it and the command that produces a readable dump. There
+   is no run row, so there is no "failed run" for a file this build was never going to read.
+2. **The reader reports, and the mapper judges.** `ThreadDumpReader` knows HotSpot's wording
+   (`java.lang.Thread.State`, `- locked`, `- waiting to lock`, `Found N deadlock.`,
+   `JNI global refs:`); `ThreadDumpMeasurementMapper` decides what those words are worth. Every row
+   carries a `basis` (where the number came from) and, where one is needed, a `caveat` — the
+   `RUNNABLE` row names the native-call case explicitly.
+3. **The deadlock verdict is the JVM's.** The count is the number on the dump's own
+   `Found N deadlock.` line; the cycles are connected components of the edges the file printed. No
+   cycle search of RepoPilot's own, and no severity.
+4. **The stacks stay in the artefact.** The provenance records the environment, the dump's own
+   timestamp (as text — the JVM writes local time and no zone), and counts. Thread names appear only
+   in the deadlock cycle's own measurement, where naming them is the point.
+5. **One instant, never a rate.** No trend, no comparison with another dump, no per-thread CPU. The
+   Concurrency Inspector says so on every render rather than in a tooltip.
+
+### How a heap dump is read
+
+The third reader, and the same lifecycle a third time — which is the payoff for having extracted it:
+
+```text
+POST /repositories/{id}/runtime/artifacts          ← same endpoint, same content-addressed store
+  │  the format check happens here, at upload: the file must begin with the HPROF header
+  │  ('JAVA PROFILE 1.0.1'/'1.0.2'). A gzip stream, a class histogram, a recording and a
+  │  thread dump are each refused by name, with the command that produces a readable file.
+  ▼
+POST /repositories/{id}/runtime/artifacts/{artifactId}/analyze
+  ▼
+job row (HEAP_ANALYSIS, QUEUED)
+  ▼
+AbstractRuntimeAnalysisHandler.execute()           ← unchanged: the lifecycle, in one place
+  │  1. repository id → artefact → type → supported?, or refuse before any run exists
+  │  2. analysis_run row: RUNNING, reader version ('heap-dump-reader=1.0.0')
+  │  3. HeapDumpAnalysisJobHandler.analyse(path, …)
+  │       HeapDumpReader    → HeapDumpReport      ← two streaming passes, checkpointed
+  │       HeapDumpMeasurementMapper → List<MeasurementDraft>   (pure function)
+  │  4. persist the drafts in one batch, with the run and artefact ids
+  │  5. analysis_run → SUCCEEDED | FAILED | CANCELLED, with the summary and provenance
+  ▼
+GET /repositories/{id}/runtime/measurements?metric=heapdump&runId=…      ← the Memory screen
+```
+
+What is specific to a heap dump, and why:
+
+1. **The reader makes two passes over the file.** Pass one walks the top-level records and keeps the
+   class table (`LOAD_CLASS` → object id, name string id). Pass two walks the heap records *and* keeps
+   the text of only the strings pass one asked for. A single pass would have to hold the whole string
+   table — 68 673 records in a 10 MB dump — to resolve names that most of it does not need. A name
+   that never arrives is counted as an unnamed object rather than invented.
+2. **The record sizes come from the file, not from a specification.** `INSTANCE_DUMP` states how many
+   bytes follow it and that count already includes inherited fields, so the reader resolves no field
+   layout and no superclass chain to advance. Where the format is documented inconsistently —
+   `ROOT_THREAD_OBJECT` writes eight bytes after the identifier, not the four some descriptions give —
+   the width was settled by probing HotSpot and is commented in the reader. **An unknown record tag or
+   an unknown field type code is a hard refusal**: a guessed width produces a walk that stays inside
+   the file and returns numbers nothing downstream can check.
+3. **A record that names a type is a scope, and the type name is the only application data stored.**
+   The bytes of the census are what the dump wrote for each object, with no header and no metadata, so
+   every byte row carries its `basis` and the sentence that it is not a retained size. There is no
+   dominator tree, so there is no retained size, no leak verdict and no severity — the mapper is where
+   that is decided, once.
+4. **The tables are cut at twenty and the cut travels with them.** `types.bytes.observed` is how many
+   types the dump held, `types.bytes.reported` how many are listed, and the share on each row is a
+   share of the whole census — stated in the row's own attributes, not only in the page's copy.
+5. **A compressed dump is refused, not decompressed.** A 2.6 MB gzip file expanded to 10 MB in the
+   test case; the ratio is the point. Decompressing inside a job would let a file that passed the
+   upload's size limit hand a worker an unbounded amount of work, so the refusal names the one-line
+   fix instead.
+
 ---
 
 ## 8. Data model
@@ -504,15 +602,18 @@ What has actually been run against this snapshot, and what has not:
 
 | Area | Status |
 | --- | --- |
-| Backend test suite | 73 tests, all passing (JUnit 5, H2 for the `local` profile, real Spring contexts) |
-| Frontend | `tsc --noEmit` clean under strict settings; production build succeeds (115 modules, 317.52 kB JS / 95.95 kB gzip) |
-| Live end-to-end | Indexing, Code Explorer (including findings), Dependency Graph, Performance Lab, Analysis History, Settings and the command palette exercised against a running backend on Windows |
-| Smoke test | 130 checks against a live server, 0 failures (readiness, registration, indexing, code intelligence, static analysis, the finding evidence contract, runtime evidence including its refusals, and — when the data directory is known — six checks that inspect the artefact store on disk) |
+| Backend test suite | 128 tests, all passing (JUnit 5, H2 for the `local` profile, real Spring contexts) |
+| Frontend | `tsc --noEmit` clean under strict settings; production build succeeds (117 modules, 349.15 kB JS / 102.60 kB gzip) |
+| Live end-to-end | Indexing, Code Explorer (including findings), Dependency Graph, Performance Lab, Concurrency Inspector, Memory Analysis, Analysis History, Settings and the command palette exercised against a running backend on Windows |
+| Smoke test | 257 checks against a live server, 0 failures (readiness, registration, indexing, code intelligence, static analysis, the finding evidence contract, runtime evidence from three readers including all of their refusals, a real thread dump and a real 179 MB heap dump taken from the backend under test, and — when the data directory is known — six checks that inspect the artefact store on disk) |
 | Benchmark corpus | 3 002 Java files indexed (16 205 symbols, 105 001 references) and analysed in 118 s for 600 findings; spans recorded in [`corpus/RESULTS.md`](../corpus/RESULTS.md) |
 | Static analysis | **Verified.** Built-in rules and PMD run as a durable job; every stored finding passed its citation check; filters, tallies, run scoping and append-only re-runs asserted in the smoke test and the integration test |
 | Runtime evidence (JFR) | **Verified.** A live recording was uploaded, stored by hash, read by a durable job and queried back: 101 measurements with units, kinds, reductions and provenance. Refusals (bad header, unreadable type, pathological filename, both upload limits), deduplication, reproducibility and the removal of a deleted repository's bytes are asserted in the smoke test (69 new checks) and `RuntimeAnalysisIntegrationTest` / `RuntimeUploadLimitIntegrationTest` |
+| Runtime evidence (thread dumps) | **Verified.** Two real dumps of live JVMs (taken with `jcmd`, one of them re-encoded as UTF-16 by a Windows shell) were uploaded, stored by hash, read by a durable job and queried back: 11 and 17 measurements with their states, contention and the JVM's own deadlock verdict. The two `Thread.dump_to_file` formats are refused by name at upload, and the cross-reader "newest runtime evidence" query is asserted in the smoke test and `ThreadDumpAnalysisIntegrationTest` |
 | SpotBugs | **Not implemented.** Needs bytecode; `compiledClassesPresent` is recorded per revision so it will report *not applicable* rather than a pass |
-| Heap/thread-dump analysis, benchmark import, AI investigation | **Not implemented.** Job types are declared; submitting one returns `UNSUPPORTED_INPUT`. Heap and thread dumps are accepted and stored, then refused by name |
+| Runtime evidence (heap dumps) | **Verified.** Two real HPROF dumps (a purpose-built 10 MB subject and a 179 MB `GC.heap_dump` of this backend taken by the smoke test) were uploaded, stored by hash, read by a durable job and queried back: 61 measurements per dump, with the census, the `TOP_N = 20` type tables, the GC-root kinds and the largest single object. Object counts for `byte[]` and `java.lang.String` agree exactly with `jcmd GC.class_histogram`; the byte figures deliberately do not, and every byte row carries its basis. A class histogram, a gzip stream and a thread dump are refused by name at upload. The census arithmetic, the basis on every byte row and the cross-reader "newest runtime evidence" query are asserted in the smoke test (73 checks) and `HeapDumpAnalysisIntegrationTest` |
+| Benchmark import, AI investigation | **Not implemented.** Job types are declared; submitting one returns `UNSUPPORTED_INPUT`. A benchmark result is accepted and stored, then refused by name |
+| Age-based artefact retention | **Not implemented.** `ARTIFACT_RETENTION` has no handler; artefacts are reclaimed by deleting their repository |
 | PostgreSQL | **Not verified.** Migrations are written to be portable and are exercised on H2 in PostgreSQL-compatibility mode only |
 | `docker compose up --build` | **Not verified.** There is no Docker daemon in the environment this snapshot was built in; the images and Compose file are written and reviewed but never executed |
 

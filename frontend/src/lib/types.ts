@@ -358,9 +358,9 @@ export interface FindingSummaryView {
 /**
  * What kind of file a runtime artefact is.
  *
- * Only `JFR_RECORDING` can be read by this build. The others are accepted, stored and
- * reported as unsupported with a reason, because throwing away evidence an operator
- * already collected is worse than admitting the reader is not written yet.
+ * `JFR_RECORDING` and `THREAD_DUMP` can be read by this build. The others are accepted, stored and
+ * reported as unsupported with a reason, because throwing away evidence an operator already
+ * collected is worse than admitting the reader is not written yet.
  */
 export type RuntimeArtifactType =
   | "JFR_RECORDING"
@@ -398,8 +398,10 @@ export interface RuntimeArtifactView {
   supported: boolean;
   unsupportedReason?: string | null;
   /**
-   * True for artefacts that contain process memory (heap and thread dumps). Drives the
-   * warning shown before such a file is uploaded anywhere.
+   * True only for artefacts that contain the contents of process memory — a heap dump is the
+   * whole heap, values and all. A thread dump is deliberately false: it names threads and frames,
+   * which describes your code, but it is not a copy of the heap. The two imply different handling
+   * and the warning shown for one would be false for the other.
    */
   containsProcessMemory: boolean;
   measurementCount: number;
@@ -456,17 +458,23 @@ export interface RuntimeSummaryView {
 /**
  * The provenance document stored with an artefact.
  *
- * Mirrors exactly what the reader records and nothing more. The missing fields are the point:
- * there is no `jvmArguments`, no `systemProperties` and no per-event setting, because RepoPilot
- * does not read them — they are credential carriers, and a threshold or sampling period cannot be
- * attributed to an event type through the JDK 21 consumer API. A type that offered those fields
- * would invite a client to display them.
+ * Mirrors exactly what the reader records and nothing more, and is therefore one type with
+ * per-reader sections rather than two loosely-related ones: both readers fill `environment` and
+ * `produced`, and a recording fills `recording` while a thread dump fills `dump`. The missing fields
+ * are the point: there is no `jvmArguments`, no `systemProperties` and no per-event setting, because
+ * RepoPilot does not read them — they are credential carriers, and a threshold or sampling period
+ * cannot be attributed to an event type through the JDK 21 consumer API. A type that offered those
+ * fields would invite a client to display them. A thread dump's stacks are absent for the same kind
+ * of reason: they are the application's own structure, they stay in the file, and only counts are
+ * stored.
  */
 export interface RuntimeProvenance {
   environment?: {
     jvmName?: string | null;
     /** The JVM's full build string. Already begins with `jvmName`; shown verbatim, never merged. */
     jvmVersion?: string | null;
+    /** How the VM was running, e.g. `mixed mode, sharing`. A thread dump states this in its header. */
+    jvmMode?: string | null;
     jvmStartTime?: string | null;
     processId?: number | null;
     /** A multi-line description, kept as the JVM wrote it. */
@@ -477,6 +485,16 @@ export interface RuntimeProvenance {
     hardwareThreads?: number | null;
     physicalMemoryBytes?: number | null;
     physicalMemoryUsedBytes?: number | null;
+    /**
+     * A heap dump's format version, e.g. `1.0.2`, read from the file's own header. A thread dump
+     * writes no environment block beyond its header, so these are absent for one.
+     */
+    formatVersion?: string | null;
+    /** The width of an object identifier in the file, in bytes. */
+    identifierSize?: number | null;
+    /** Why `identifierSize` is not the width of a reference: a 64-bit dump with compressed
+     * references still writes 8-byte identifiers. The reader's own explanation. */
+    identifierSizeBasis?: string | null;
   };
   recording?: {
     name?: string | null;
@@ -486,11 +504,67 @@ export interface RuntimeProvenance {
     events?: number | null;
     eventTypes?: number | null;
   };
+  /**
+   * A thread dump's header and counts.
+   *
+   * `takenAt` is text, not an instant: HotSpot writes local time there and the file records no
+   * zone, so converting it would be a guess about which offset the process was in.
+   */
+  dump?: {
+    takenAt?: string | null;
+    /** Why `takenAt` is a string: the reader's own explanation, shown next to it. */
+    takenAtBasis?: string | null;
+    threads?: number | null;
+    javaThreads?: number | null;
+    threadsWithoutJavaState?: number | null;
+    threadsWithUnknownState?: number | null;
+    javaThreadListLength?: number | null;
+    deadlocks?: number | null;
+    contendedMonitors?: number | null;
+    /** The uploaded file's size, as the reader saw it. */
+    fileBytes?: number | null;
+    fileBytesBasis?: string | null;
+    /** String records in the file, which is what a dump's class names and thread names live in. */
+    strings?: number | null;
+    /**
+     * A heap dump's header carries the format version, the identifier width and a timestamp, and
+     * nothing about the JVM that wrote it — so for a heap dump this is the reader saying so rather
+     * than a name. A thread dump states the VM in its header and fills `environment.jvmName`.
+     */
+    jvmName?: string | null;
+  };
+  /**
+   * A heap dump's census, as the reader walked it.
+   *
+   * Every byte figure here is what the dump recorded for the objects themselves — an instance's
+   * field values, an array's elements — and excludes object headers, class metadata and everything
+   * reachable from those objects. It is therefore smaller than the memory the objects occupy and is
+   * not a retained size. The measurement rows repeat these numbers with that basis attached; these
+   * are here so the run's own provenance is readable on its own.
+   */
+  heap?: {
+    objects?: number | null;
+    objectBytes?: number | null;
+    instances?: number | null;
+    instanceBytes?: number | null;
+    arrays?: number | null;
+    arrayBytes?: number | null;
+    objectArrays?: number | null;
+    primitiveArrays?: number | null;
+    types?: number | null;
+    classesLoaded?: number | null;
+    classesDumped?: number | null;
+    roots?: number | null;
+    /** Present only when it is not zero, which is the only case where it needs saying. */
+    objectsWithoutAType?: number | null;
+  };
   produced?: {
     measurements?: number | null;
     /** Always zero: this reader classifies nothing. Stated rather than left out. */
     findings?: number | null;
     thresholdsApplied?: boolean | null;
+    /** False for a heap dump, and stated: no dominator tree is built, so no size is retained. */
+    retainedSizesComputed?: boolean | null;
   };
   /** The reader's own prose about what these numbers do and do not mean. */
   note?: string | null;

@@ -25,11 +25,29 @@
 
     It finally exercises runtime evidence: it generates a JFR recording with the local JDK
     and uploads it, then checks what the reader is allowed to claim and what it must not.
-    The refusals matter as much as the successes — a text file is refused by name, a heap
-    dump is stored but reported as unsupported, and analysing it is refused before any run
-    exists. Every measurement must carry its unit, its reduction and the run it came from;
-    an allocation sampling weight must never be presented as bytes; and a threshold-gated
-    channel must carry its caveat on the measurement itself.
+    The refusals matter as much as the successes — a file with no recording header is
+    refused by name, and the refusal comes before any run exists. Every measurement must
+    carry its unit, its reduction and the run it came from; an allocation sampling weight
+    must never be presented as bytes; and a threshold-gated channel must carry its caveat on
+    the measurement itself.
+
+    Then the same for thread dumps, which is where a second reader proved the difference
+    between "runtime evidence" and "a JFR run": a real dump of this very backend is taken
+    with jcmd, uploaded, analysed and read back. All four thread states must be reported
+    even when one of them is empty, the JVM's own threads must be counted apart from the
+    Java ones, the deadlock count must be the JVM's own rather than a search RepoPilot ran,
+    the RUNNABLE count must carry the caveat that HotSpot reports a blocked native call as
+    runnable, and no stack frame may reach the database. The two thin Thread.dump_to_file
+    shapes are refused by name, with the command that produces a readable dump.
+
+    Then the same again for heap dumps, where the reader makes an exact claim (a census) and
+    must refuse a larger one (a retained size) on every row it writes. A real dump of this
+    backend is taken with jcmd GC.heap_dump, uploaded, deduplicated by content hash, analysed
+    and read back: every measurement must be a count or a byte figure with a stated basis,
+    the two type tables must disclose that they are cut at twenty, the three parts of the
+    census must sum to the whole, and no threshold or severity may appear anywhere. The three
+    files an operator most often has instead — a class histogram, a gzipped dump and a thread
+    dump — are each refused by name, with the command that produces a readable one.
 
     When the data directory is known, it also checks the one thing the API cannot show:
     that deleting a repository removes the bytes it had stored, and leaves another
@@ -584,26 +602,47 @@ $refusal = $refused.Body | ConvertFrom-Json
 Assert-That ($refusal.errorCode -eq "UNSUPPORTED_INPUT") "the refusal carries a stable error code"
 Assert-That ($refusal.message -like "*FLR*") "the refusal says what was expected instead"
 
-# An artefact this build cannot read is stored and reported as such, because throwing away
-# evidence the operator already collected is worse than admitting the reader is not written.
-$heap = Send-Artifact $repositoryId $notRecording "smoke.hprof" "HEAP_DUMP"
-Assert-That ($heap.Status -eq 201) "an artefact type this build cannot read is still stored"
-$heapArtifact = $heap.Body | ConvertFrom-Json
-Assert-That ($heapArtifact.supported -eq $false) "the unsupported artefact is reported as unreadable"
-Assert-That (-not [string]::IsNullOrWhiteSpace($heapArtifact.unsupportedReason)) `
-    "the unsupported artefact names the reason it cannot be read"
-Assert-That ($heapArtifact.containsProcessMemory -eq $true) "a heap dump is flagged as process memory"
-
-$heapAnalysis = Post-ExpectingFailure `
-    "$api/repositories/$repositoryId/runtime/artifacts/$($heapArtifact.id)/analyze" "{}"
-Assert-That ($heapAnalysis.Status -eq 422) `
-    "analysing an unreadable artefact is refused (was $($heapAnalysis.Status))"
-$heapRefusal = $heapAnalysis.Body | ConvertFrom-Json
-Assert-That ((Get-Prop $heapRefusal "errorCode") -eq "UNSUPPORTED_INPUT") `
-    "the refusal names the unsupported input"
+# A heap dump is a supported type as of this phase, so the file that proves a refusal is one that
+# is not a dump at all. It is refused at upload rather than stored: an artefact nothing can read
+# and nothing can analyse is not evidence, it is a row that makes the artefact list lie.
+$notADump = Send-Artifact $repositoryId $notRecording "smoke.hprof" "HEAP_DUMP"
+Assert-That ($notADump.Status -eq 422) `
+    "a file with no HPROF header is refused as a heap dump (was $($notADump.Status))"
+$notADumpRefusal = $notADump.Body | ConvertFrom-Json
+Assert-That ($notADumpRefusal.errorCode -eq "UNSUPPORTED_INPUT") `
+    "the heap-dump refusal carries a stable error code"
+Assert-That ($notADumpRefusal.message -like "*HPROF*") `
+    "the heap-dump refusal names the format it expected"
 $noRunYet = Get-Json "$api/repositories/$repositoryId/runtime/summary"
 Assert-That ((Get-Prop $noRunYet "runId") -eq $null) `
-    "the refused analysis created no run at all"
+    "the refused upload created no run at all"
+
+<#
+An artefact type this build cannot read is stored and reported as such, because throwing away evidence
+the operator already collected is worse than admitting the reader is not written.
+
+A benchmark result is that type now that a heap dump has a reader. It is a table of numbers the
+operator's own harness wrote, so it is stored unread — and it is deliberately not flagged as process
+memory, because a warning that is false where it is easy to check stops being read where it is not.
+#>
+$unreadable = Send-Artifact $repositoryId $notRecording "smoke-benchmark.json" "BENCHMARK_RESULT"
+Assert-That ($unreadable.Status -eq 201) "an artefact type this build cannot read is still stored"
+$unreadableArtifact = $unreadable.Body | ConvertFrom-Json
+Assert-That ($unreadableArtifact.supported -eq $false) "the unsupported artefact is reported as unreadable"
+Assert-That (-not [string]::IsNullOrWhiteSpace($unreadableArtifact.unsupportedReason)) `
+    "the unsupported artefact names the reason it cannot be read"
+Assert-That ($unreadableArtifact.containsProcessMemory -eq $false) `
+    "a benchmark result is not flagged as process memory"
+
+$unreadableAnalysis = Post-ExpectingFailure `
+    "$api/repositories/$repositoryId/runtime/artifacts/$($unreadableArtifact.id)/analyze" "{}"
+Assert-That ($unreadableAnalysis.Status -eq 422) `
+    "analysing an unreadable artefact is refused (was $($unreadableAnalysis.Status))"
+$unreadableRefusal = $unreadableAnalysis.Body | ConvertFrom-Json
+Assert-That ((Get-Prop $unreadableRefusal "errorCode") -eq "UNSUPPORTED_INPUT") `
+    "the refusal names the unsupported input"
+Assert-That ((Get-Prop $unreadableRefusal "message") -like "*not implemented*") `
+    "the refusal names the capability that is missing"
 
 # Analyse the recording: a durable job, then a run.
 $runtimeJob = Post-Json "$api/repositories/$repositoryId/runtime/artifacts/$($artifact.id)/analyze" "{}"
@@ -723,6 +762,482 @@ Assert-That ($secondRunRows.totalItems -eq $measurements.totalItems) `
 $firstRunRows = Get-Json "$api/repositories/$repositoryId/runtime/measurements?runId=$runtimeRunId&size=1"
 Assert-That ($firstRunRows.totalItems -eq $measurements.totalItems) `
     "the first run's measurements are still readable by run id"
+
+# ---------------------------------------------------------------- runtime evidence (thread dumps)
+Write-Host "`n== runtime evidence (thread dumps) ==" -ForegroundColor Cyan
+
+<#
+Asks the JVM on the PATH where its home is, so jcmd can be found without trusting JAVA_HOME.
+
+Only a JDK ships jcmd, and a JRE does not, so the checks that need a real dump skip themselves
+rather than failing for a reason that has nothing to do with the code. The reader against a real
+dump is also asserted unconditionally in ThreadDumpReaderTest, which takes its dump the same way.
+#>
+$javaHome = $null
+try {
+    # Through cmd, because PowerShell 5.1 turns a native command's output on stderr — which is where
+    # `java -version` writes — into a terminating error under $ErrorActionPreference = "Stop".
+    $javaProperties = @(& cmd /c "java -XshowSettings:properties -version 2>&1")
+    $homeLines = @($javaProperties | Where-Object { $_ -like "*java.home = *" })
+    if ($homeLines.Count -gt 0) { $javaHome = ($homeLines[0] -split "=", 2)[1].Trim() }
+} catch {
+    $javaHome = $null
+}
+$jcmdPath = $null
+if (-not [string]::IsNullOrWhiteSpace($javaHome)) {
+    $candidate = Join-Path $javaHome "bin\jcmd.exe"
+    if (Test-Path $candidate) { $jcmdPath = $candidate }
+}
+
+<#
+The two thin Thread.dump_to_file shapes are refused by name, before anything is stored.
+
+Written here as literals rather than captured, because the refusal is the assertion: they record no
+thread states, no monitor ownership and no deadlock section, so a report built from them would be a
+page of zeros indistinguishable from a healthy JVM.
+#>
+$thinPlain = Join-Path $runtimeDir "thread-dump-thin.txt"
+$thinPlainText = "9568`n2026-10-19T04:34:15.300714Z`n21.0.5+9-LTS-239`n`n#9 `"Reference Handler`"`n" +
+    "      java.base/java.lang.ref.Reference.waitForReferencePendingList(Native Method)"
+[System.IO.File]::WriteAllText($thinPlain, $thinPlainText, (New-Object System.Text.UTF8Encoding($false)))
+$refusedThin = Send-Artifact $repositoryId $thinPlain "thread-dump-thin.txt" "THREAD_DUMP"
+Assert-That ($refusedThin.Status -eq 422) `
+    "a Thread.dump_to_file -format=plain dump is refused (was $($refusedThin.Status))"
+$thinRefusal = $refusedThin.Body | ConvertFrom-Json
+Assert-That ($thinRefusal.errorCode -eq "UNSUPPORTED_INPUT") `
+    "the thin-dump refusal carries a stable error code"
+Assert-That ($thinRefusal.message -like "*Thread.dump_to_file*") `
+    "the thin-dump refusal names the command that wrote the file"
+Assert-That ($thinRefusal.message -like "*Thread.print*") `
+    "the thin-dump refusal names the command that produces a readable dump"
+
+$thinJson = Join-Path $runtimeDir "thread-dump-thin.json"
+$thinJsonText = "{`n  `"threadDump`": {`n    `"processId`": `"9568`",`n    `"time`": `"2026-10-19T04:32:11Z`"`n  }`n}"
+[System.IO.File]::WriteAllText($thinJson, $thinJsonText, (New-Object System.Text.UTF8Encoding($false)))
+$refusedJson = Send-Artifact $repositoryId $thinJson "thread-dump-thin.json" "THREAD_DUMP"
+Assert-That ($refusedJson.Status -eq 422) `
+    "a Thread.dump_to_file -format=json dump is refused too (was $($refusedJson.Status))"
+Assert-That ((($refusedJson.Body | ConvertFrom-Json).message) -like "*Thread.print*") `
+    "the JSON refusal names a command that produces a readable dump"
+
+<#
+A real dump of the JVM under test, taken with the tool an operator would use.
+
+Not a checked-in fixture: the reader is built on HotSpot's exact wording, so a captured file would
+test the fixture's age rather than the reader's behaviour. The redirect is PowerShell's on purpose —
+on Windows it re-encodes the tool's output as UTF-16 with a byte-order mark, which is how a dump
+taken at a Windows console actually arrives.
+#>
+if ($null -eq $jcmdPath) {
+    Write-Host "  SKIPPED: no jcmd in the JVM on the PATH, so no real dump can be taken. The same" -ForegroundColor Yellow
+    Write-Host "           assertions run unconditionally in ThreadDumpAnalysisIntegrationTest." -ForegroundColor Yellow
+    $skipped++
+} else {
+    $attachable = @(& $jcmdPath -l | Where-Object { $_ -like "*repopilot-backend*" })
+    if ($attachable.Count -eq 0) {
+        Write-Host "  SKIPPED: jcmd found nothing attachable running repopilot-backend." -ForegroundColor Yellow
+        $skipped++
+    } else {
+        $backendPid = (@($attachable[0] -split "\s+"))[0]
+        $dumpPath = Join-Path $runtimeDir "thread-dump.txt"
+        & $jcmdPath $backendPid "Thread.print" > $dumpPath
+        $dumpLength = 0
+        if (Test-Path $dumpPath) { $dumpLength = (Get-Item $dumpPath).Length }
+        Assert-That ($dumpLength -gt 0) "a thread dump of the backend was taken ($dumpLength bytes)"
+
+        $dumpUpload = Send-Artifact $repositoryId $dumpPath "thread-dump.txt" "THREAD_DUMP"
+        Assert-That ($dumpUpload.Status -eq 201) "a thread dump uploads (was $($dumpUpload.Status))"
+        $dumpArtifact = $dumpUpload.Body | ConvertFrom-Json
+        Assert-That ($dumpArtifact.artifactType -eq "THREAD_DUMP") "the artefact is recorded as a thread dump"
+        Assert-That ($dumpArtifact.supported -eq $true) "a thread dump is reported as readable"
+        # The contrast with a heap dump, which is flagged as process memory because it is a literal
+        # copy of the heap: a dump names threads and frames, which is your code's structure, but it
+        # is not a copy of the heap and must not be labelled as one — a warning that is wrong where
+        # it matters elsewhere stops being read.
+        Assert-That ($dumpArtifact.containsProcessMemory -eq $false) `
+            "a thread dump is not flagged as process memory"
+
+        $dumpJob = Post-Json "$api/repositories/$repositoryId/runtime/artifacts/$($dumpArtifact.id)/analyze" "{}"
+        Assert-That ($dumpJob.jobType -eq "THREAD_DUMP_ANALYSIS") `
+            "the dump is analysed by the thread-dump job, not by the JFR one"
+        $dumpFinal = Wait-ForJob $dumpJob.id 300
+        Assert-That ($dumpFinal.status -eq "SUCCEEDED") "the thread-dump analysis succeeded (was $($dumpFinal.status))"
+        Write-Host ("  summary: {0}" -f $dumpFinal.resultSummary)
+        Assert-That ($dumpFinal.resultSummary -like "*thread dump*") "the run summary says what was read"
+        Assert-That ($dumpFinal.resultSummary -like "*one instant*") `
+            "the run summary states that a dump describes one instant"
+        Assert-That ($dumpFinal.resultSummary -like "*no threshold applied*") `
+            "the run summary states that no threshold was applied"
+        Assert-That ($dumpFinal.resultSummary -like "*no severity assigned*") `
+            "the run summary states that no severity was assigned"
+
+        # The newest runtime evidence is now the dump's run, even though the newest *JFR* run is
+        # older. A "current run" query that named one pipeline would report that this repository has
+        # no runtime evidence at all the moment a second reader appeared.
+        $dumpSummary = Get-Json "$api/repositories/$repositoryId/runtime/summary"
+        Assert-That ((Get-Prop $dumpSummary "runId") -eq $dumpFinal.analysisRunId) `
+            "the runtime summary now points at the thread-dump run"
+        Assert-That ((Get-Prop $dumpSummary "artifactType") -eq "THREAD_DUMP") `
+            "the summary names the kind of artefact the run read"
+        $dumpFamilies = @()
+        $dumpFamilyObject = Get-Prop $dumpSummary "byMetricFamily"
+        if ($null -ne $dumpFamilyObject) {
+            $dumpFamilies = @($dumpFamilyObject.PSObject.Properties | ForEach-Object { $_.Name })
+        }
+        Assert-That (($dumpFamilies -contains "threads") -and ($dumpFamilies -contains "monitors")) `
+            "the dump's measurements are grouped under its own families"
+        Assert-That ($dumpFamilies -notcontains "gc") "a thread-dump run does not report JFR families"
+
+        $dumpProvenance = Get-Prop $dumpSummary "provenanceJson"
+        Assert-That ($null -ne $dumpProvenance) "the dump's header is stored with the run"
+        Assert-That ((Get-Prop (Get-Prop $dumpProvenance "dump") "threads") -gt 0) `
+            "the provenance counts the threads the dump reported"
+        $dumpProvenanceText = $dumpProvenance | ConvertTo-Json -Depth 10 -Compress
+        # The stacks stay in the file the operator uploaded. They are the application's own structure,
+        # and copying them into a database column would put the source into the evidence store.
+        Assert-That (-not $dumpProvenanceText.Contains("java.lang.Thread.run")) `
+            "the provenance carries no thread stack"
+        Assert-That (-not $dumpProvenanceText.Contains("\tat ")) "the provenance carries no stack frames"
+        Assert-That ((Get-Prop (Get-Prop $dumpProvenance "produced") "findings") -eq 0) `
+            "the dump run classifies nothing"
+
+        $dumpRows = @((Get-Json "$api/repositories/$repositoryId/runtime/measurements?metric=threaddump&size=500").items)
+        Assert-That ($dumpRows.Count -gt 0) "the dump produced measurements"
+        Assert-That (@($dumpRows | Where-Object { $_.metricKey -notlike "threaddump.*" }).Count -eq 0) `
+            "every measurement the filter returns is the dump's own"
+        Assert-That (@($dumpRows | Where-Object { $_.metricKind -ne "COUNTER" }).Count -eq 0) `
+            "every measurement of a dump is a count of something the dump reports"
+        Assert-That (@($dumpRows | Where-Object { $_.unit -ne "count" }).Count -eq 0) `
+            "every measurement of a dump carries the count unit"
+        Assert-That (@($dumpRows | Where-Object { (Get-Prop $_ "analysisRunId") -ne $dumpFinal.analysisRunId }).Count -eq 0) `
+            "every dump measurement is tied to the run that produced it"
+
+        # All four states are reported, including an empty one: a state nobody was in has to be
+        # stated, or "0 blocked" cannot be told apart from a state this build does not know.
+        $stateRows = @($dumpRows | Where-Object { $_.metricKey -eq "threaddump.threads.state.count" })
+        Assert-That ($stateRows.Count -eq 4) "all four thread states are reported ($($stateRows.Count))"
+        $stateScopes = @($stateRows | ForEach-Object { $_.scope })
+        foreach ($expectedState in @("RUNNABLE", "BLOCKED", "WAITING", "TIMED_WAITING")) {
+            Assert-That ($stateScopes -contains $expectedState) "the dump reports the $expectedState state"
+        }
+        $javaThreads = @($dumpRows | Where-Object { $_.metricKey -eq "threaddump.threads.java.count" })
+        Assert-That ($javaThreads.Count -eq 1) "the dump reports how many threads have a Java state"
+        $statedThreads = 0
+        $stateRows | ForEach-Object { $statedThreads = $statedThreads + [int]$_.value }
+        $unknownState = @($dumpRows | Where-Object { $_.metricKey -eq "threaddump.threads.unknownState.count" })
+        $unknownCount = 0
+        if ($unknownState.Count -gt 0) { $unknownCount = [int]$unknownState[0].value }
+        Assert-That (($statedThreads + $unknownCount) -eq [int]$javaThreads[0].value) `
+            "the four states plus any unrecognised one account for every Java thread"
+        $runnable = @($stateRows | Where-Object { $_.scope -eq "RUNNABLE" })[0]
+        Assert-That ($runnable.attributesJson -like "*native call*") `
+            "the RUNNABLE count carries the caveat that it is not a count of threads on a CPU"
+
+        # The JVM always reports its own runtime threads, and they carry no Java state; counting them
+        # as Java threads would inflate every state's share.
+        Assert-That (@($dumpRows | Where-Object { $_.metricKey -eq "threaddump.threads.nonjava.count" }).Count -eq 1) `
+            "the dump reports the JVM's own threads separately"
+
+        # Deadlocks are reported, never searched for. This process is not deadlocked, and the row says
+        # so in the JVM's own terms rather than by RepoPilot's silence.
+        $deadlockRows = @($dumpRows | Where-Object { $_.metricKey -eq "threaddump.threads.deadlock.count" })
+        Assert-That ($deadlockRows.Count -eq 1) "the dump reports a deadlock count"
+        Assert-That ($deadlockRows[0].value -eq 0) "the backend is not deadlocked at this instant"
+        Assert-That ($deadlockRows[0].attributesJson -like "*does not search for cycles*") `
+            "the deadlock row states that the count is the JVM's, not RepoPilot's"
+        Assert-That (@($dumpRows | Where-Object { $_.metricKey -eq "threaddump.threads.deadlocked.count" }).Count -eq 0) `
+            "no deadlocked threads are named when the detector reported none"
+
+        # Contention is whatever the dump said, including nothing. The assertion is the contract: the
+        # row exists, and the table cannot list more monitors than were observed.
+        $contendedRows = @($dumpRows | Where-Object { $_.metricKey -eq "threaddump.monitors.contended.count" })
+        Assert-That ($contendedRows.Count -eq 1) "the dump reports how many monitors were contended"
+        $observedRows = @($dumpRows | Where-Object { $_.metricKey -eq "threaddump.monitors.waiters.observed" })
+        $waitersRows = @($dumpRows | Where-Object { $_.metricKey -eq "threaddump.monitors.waiters" })
+        Assert-That ($waitersRows.Count -le 20) "the contention table is bounded (TOP_N)"
+        Assert-That (@($waitersRows | Where-Object { $_.attributesJson -notlike "*ownerThread*" }).Count -eq 0) `
+            "every contended monitor says who holds it, or that nobody reported holding it"
+        if ([int]$contendedRows[0].value -eq 0) {
+            # Nothing was contended, so there is no table to disclose the size of: the count row is
+            # the whole answer, and an "observed 0" row would be a second way of saying it.
+            Assert-That ($waitersRows.Count -eq 0) "no contention table is written when nothing was contended"
+            Assert-That ($observedRows.Count -eq 0) `
+                "no truncation disclosure is written for a table that does not exist"
+        } else {
+            Assert-That ($observedRows.Count -eq 1) "the point-in-time contention count is stated"
+            if ([int]$observedRows[0].value -le 20) {
+                Assert-That ($waitersRows.Count -eq [int]$observedRows[0].value) `
+                    "the table lists every contended monitor when there are fewer than the cap"
+            } else {
+                Assert-That ($waitersRows.Count -eq 20) "the table stops at the cap and says how many there were"
+            }
+        }
+
+        # Two readers, one repository: the dump's run is newer, and the recording's rows are untouched.
+        $jfrStillThere = Get-Json "$api/repositories/$repositoryId/runtime/measurements?runId=$runtimeRunId&size=1"
+        Assert-That ($jfrStillThere.totalItems -eq $measurements.totalItems) `
+            "a thread-dump run does not replace the recording's measurements"
+    }
+}
+
+# ---------------------------------------------------------------- runtime evidence (heap dumps)
+Write-Host "`n== runtime evidence (heap dumps) ==" -ForegroundColor Cyan
+
+<#
+The three files an operator most often has instead of a heap dump, each refused by name.
+
+A class histogram is the common case and the most dangerous: `jmap -histo` is a command people run
+first, and its output has counts and byte totals that look like a report. It has no objects behind
+them, so the refusal says so and names the command that writes a real dump.
+
+A gzip stream is refused rather than decompressed inside the job: a small file can expand without
+bound, and no upload-time size limit can defend against that. The refusal names the one-line fix.
+
+A thread dump is a different artefact type with its own reader, so this one is redirected rather than
+diagnosed.
+#>
+$histogram = Join-Path $runtimeDir "class-histogram.hprof"
+$histogramLines = @(
+    " num     #instances         #bytes  class name (module)",
+    "-------------------------------------------------------",
+    "   1:          1352        1793216  [B (java.base@21.0.5)",
+    "   2:           250          64000  [I (java.base@21.0.5)",
+    "   3:           500          16000  dev.repopilot.sample.Node",
+    "Total          2102        1873216"
+)
+[System.IO.File]::WriteAllText($histogram, ($histogramLines -join "`n"),
+        (New-Object System.Text.UTF8Encoding($false)))
+$refusedHistogram = Send-Artifact $repositoryId $histogram "class-histogram.hprof" "HEAP_DUMP"
+Assert-That ($refusedHistogram.Status -eq 422) `
+    "a class histogram is refused as a heap dump (was $($refusedHistogram.Status))"
+$histogramRefusal = $refusedHistogram.Body | ConvertFrom-Json
+Assert-That ($histogramRefusal.errorCode -eq "UNSUPPORTED_INPUT") `
+    "the histogram refusal carries a stable error code"
+Assert-That ($histogramRefusal.message -like "*jmap -histo*") `
+    "the histogram refusal names the command that wrote the file"
+Assert-That ($histogramRefusal.message -like "*GC.heap_dump*") `
+    "the histogram refusal names the command that writes a real dump"
+Assert-That ($histogramRefusal.message -like "*no object graph*") `
+    "the histogram refusal says why a histogram cannot be analysed"
+
+# Two bytes of the gzip magic is all it takes to be refused, and the file here is not even a valid
+# stream: the detection is a header check, not a decompression attempt.
+$gzipped = Join-Path $runtimeDir "heap-dump.hprof.gz"
+[System.IO.File]::WriteAllBytes($gzipped, [byte[]](0x1F, 0x8B, 0x08, 0x00, 0x61, 0x62, 0x63, 0x64))
+$refusedGzip = Send-Artifact $repositoryId $gzipped "heap-dump.hprof.gz" "HEAP_DUMP"
+Assert-That ($refusedGzip.Status -eq 422) `
+    "a gzipped dump is refused (was $($refusedGzip.Status))"
+$gzipRefusal = $refusedGzip.Body | ConvertFrom-Json
+Assert-That ($gzipRefusal.message -like "*gz=*") `
+    "the compressed-dump refusal names the option that produced it"
+Assert-That ($gzipRefusal.message -like "*does not decompress*") `
+    "the refusal says RepoPilot will not decompress inside the job"
+Assert-That ($gzipRefusal.message -like "*gzip -d*") `
+    "the refusal names the command that uncompresses the file"
+
+$threadText = Join-Path $runtimeDir "threads-as-heap.hprof"
+[System.IO.File]::WriteAllText($threadText,
+        "2026-10-19 12:00:00`nFull thread dump OpenJDK 64-Bit Server VM (21.0.5+11 mixed mode, sharing):`n`n",
+        (New-Object System.Text.UTF8Encoding($false)))
+$refusedThreadText = Send-Artifact $repositoryId $threadText "threads-as-heap.hprof" "HEAP_DUMP"
+Assert-That ($refusedThreadText.Status -eq 422) `
+    "a thread dump uploaded as a heap dump is refused (was $($refusedThreadText.Status))"
+$threadTextRefusal = $refusedThreadText.Body | ConvertFrom-Json
+Assert-That ($threadTextRefusal.message -like "*Full thread dump*") `
+    "the refusal quotes what the file actually contains"
+Assert-That ($threadTextRefusal.message -like "*THREAD_DUMP*") `
+    "the refusal sends the operator to the reader that handles it"
+
+<#
+A real heap dump of the JVM under test, taken with the tool an operator would use.
+
+A census is exact, so the numbers are checkable against the process that produced them: the backend
+always holds more than a thousand objects and more than twenty types, and every heap of a running
+Spring application has all three parts of the census. What is asserted below is the contract rather
+than a particular count, because the counts change between runs and the contract does not.
+#>
+if ($null -eq $jcmdPath) {
+    Write-Host "  SKIPPED: no jcmd in the JVM on the PATH, so no heap dump can be taken. The same" -ForegroundColor Yellow
+    Write-Host "           assertions run unconditionally in HeapDumpAnalysisIntegrationTest." -ForegroundColor Yellow
+    $skipped++
+} else {
+    $dumpable = @(& $jcmdPath -l | Where-Object { $_ -like "*repopilot-backend*" })
+    if ($dumpable.Count -eq 0) {
+        Write-Host "  SKIPPED: jcmd found nothing attachable running repopilot-backend." -ForegroundColor Yellow
+        $skipped++
+    } else {
+        $backendPid = (@($dumpable[0] -split "\s+"))[0]
+        $heapPath = Join-Path $runtimeDir "heap-dump.hprof"
+        Remove-Item $heapPath -ErrorAction SilentlyContinue
+        & $jcmdPath $backendPid "GC.heap_dump" $heapPath | Out-Null
+        Assert-That (Test-Path $heapPath) "a heap dump of the backend was taken"
+        $heapLength = 0
+        if (Test-Path $heapPath) { $heapLength = (Get-Item $heapPath).Length }
+        Write-Host ("  dump: {0} MB" -f [math]::Round($heapLength / 1MB, 1))
+        Assert-That ($heapLength -gt 1024) "the dump has content ($heapLength bytes)"
+
+        $heapUpload = Send-Artifact $repositoryId $heapPath "heap-dump.hprof" "HEAP_DUMP"
+        Assert-That ($heapUpload.Status -eq 201) "a heap dump uploads (was $($heapUpload.Status))"
+        $heapArtifact = $heapUpload.Body | ConvertFrom-Json
+        Assert-That ($heapArtifact.artifactType -eq "HEAP_DUMP") "the artefact is recorded as a heap dump"
+        Assert-That ($heapArtifact.supported -eq $true) "a heap dump is reported as readable"
+        # Not a formality: the UI's warning is driven by this flag, and a heap dump is a literal copy
+        # of the process's memory. A thread dump is deliberately false; this one must not become so.
+        Assert-That ($heapArtifact.containsProcessMemory -eq $true) `
+            "a heap dump is flagged as process memory"
+
+        $heapAgain = Send-Artifact $repositoryId $heapPath "heap-dump-again.hprof" "HEAP_DUMP"
+        $heapAgainArtifact = $heapAgain.Body | ConvertFrom-Json
+        Assert-That ($heapAgainArtifact.id -eq $heapArtifact.id) `
+            "re-uploading the same dump reuses the existing artefact"
+
+        $heapJob = Post-Json "$api/repositories/$repositoryId/runtime/artifacts/$($heapArtifact.id)/analyze" "{}"
+        Assert-That ($heapJob.jobType -eq "HEAP_ANALYSIS") `
+            "the dump is analysed by the heap job, not by the JFR or thread-dump one"
+        $heapFinal = Wait-ForJob $heapJob.id 600
+        Assert-That ($heapFinal.status -eq "SUCCEEDED") `
+            "the heap-dump analysis succeeded (was $($heapFinal.status))"
+        Write-Host ("  summary: {0}" -f $heapFinal.resultSummary)
+        Assert-That ($heapFinal.resultSummary -like "*heap dump*") "the run summary says what was read"
+        Assert-That ($heapFinal.resultSummary -like "*recorded byte*") `
+            "the run summary states that the bytes are recorded bytes"
+        Assert-That ($heapFinal.resultSummary -like "*headers and class metadata excluded*") `
+            "the run summary says what the byte figures leave out"
+        Assert-That ($heapFinal.resultSummary -like "*no retained size computed*") `
+            "the run summary refuses a retained size"
+        Assert-That ($heapFinal.resultSummary -like "*one instant*") `
+            "the run summary states that a dump describes one instant"
+        Assert-That ($heapFinal.resultSummary -like "*no threshold applied*") `
+            "the run summary states that no threshold was applied"
+        Assert-That ($heapFinal.resultSummary -like "*no severity assigned*") `
+            "the run summary states that no severity was assigned"
+
+        # The newest runtime evidence is now the heap run, three readers into one repository.
+        $heapSummary = Get-Json "$api/repositories/$repositoryId/runtime/summary"
+        Assert-That ((Get-Prop $heapSummary "runId") -eq $heapFinal.analysisRunId) `
+            "the runtime summary now points at the heap-dump run"
+        Assert-That ((Get-Prop $heapSummary "artifactType") -eq "HEAP_DUMP") `
+            "the summary names the kind of artefact the run read"
+        $heapFamilies = @()
+        $heapFamilyObject = Get-Prop $heapSummary "byMetricFamily"
+        if ($null -ne $heapFamilyObject) {
+            $heapFamilies = @($heapFamilyObject.PSObject.Properties | ForEach-Object { $_.Name })
+        }
+        foreach ($expectedFamily in @("objects", "instances", "arrays", "types", "roots", "classes")) {
+            Assert-That ($heapFamilies -contains $expectedFamily) `
+                "the dump's measurements include the $expectedFamily family"
+        }
+        Assert-That ($heapFamilies -notcontains "gc") "a heap-dump run does not report JFR families"
+        Assert-That ($heapFamilies -notcontains "threads") "a heap-dump run does not report thread-dump families"
+
+        $heapProvenance = Get-Prop $heapSummary "provenanceJson"
+        Assert-That ($null -ne $heapProvenance) "the dump's header is stored with the run"
+        $heapProvenanceText = $heapProvenance | ConvertTo-Json -Depth 10 -Compress
+        Assert-That ((Get-Prop (Get-Prop $heapProvenance "environment") "formatVersion") -like "1.0.*") `
+            "the provenance records the format version the header states"
+        Assert-That ((Get-Prop (Get-Prop $heapProvenance "environment") "identifierSize") -gt 0) `
+            "the provenance records the width of an object identifier"
+        Assert-That ((Get-Prop (Get-Prop $heapProvenance "dump") "strings") -gt 0) `
+            "the provenance records how many strings the file held"
+        Assert-That ((Get-Prop (Get-Prop $heapProvenance "dump") "takenAt") -ne $null) `
+            "the provenance records the instant the header states"
+        Assert-That ((Get-Prop (Get-Prop $heapProvenance "heap") "objects") -gt 1000) `
+            "the provenance records the census the measurements came from"
+        Assert-That ((Get-Prop (Get-Prop $heapProvenance "produced") "retainedSizesComputed") -eq $false) `
+            "the provenance states that no retained size was computed"
+        Assert-That ((Get-Prop (Get-Prop $heapProvenance "produced") "thresholdsApplied") -eq $false) `
+            "the provenance states that no threshold was applied"
+        # The census is a shape, not the application's data. A type name belongs on the row derived
+        # from it and nowhere else, so the whole provenance is checked rather than a field of it.
+        Assert-That (-not $heapProvenanceText.Contains("java.lang.String")) `
+            "the provenance carries no type names"
+
+        $heapRows = @((Get-Json "$api/repositories/$repositoryId/runtime/measurements?metric=heapdump&size=500").items)
+        Assert-That ($heapRows.Count -gt 0) "the dump produced measurements"
+        Assert-That (@($heapRows | Where-Object { $_.metricKey -notlike "heapdump.*" }).Count -eq 0) `
+            "every measurement the filter returns is the dump's own"
+        Assert-That (@($heapRows | Where-Object { $_.metricKind -notin @("COUNTER", "GAUGE", "SIZE") }).Count -eq 0) `
+            "every heap measurement is a count, a size or a gauge"
+        Assert-That (@($heapRows | Where-Object { $_.unit -notin @("count", "bytes") }).Count -eq 0) `
+            "every heap measurement is a count or a byte figure"
+        Assert-That (@($heapRows | Where-Object { $_.aggregation -notin @("COUNT", "SUM", "MAX") }).Count -eq 0) `
+            "every heap measurement is a count, a sum or a maximum"
+        Assert-That (@($heapRows | Where-Object { (Get-Prop $_ "analysisRunId") -ne $heapFinal.analysisRunId }).Count -eq 0) `
+            "every heap measurement is tied to the run that produced it"
+
+        # The basis is the whole reason a byte row is allowed to exist. A row that says "1.7 MB"
+        # without saying what was counted would read as occupied memory, or as a retained size.
+        $heapByteRows = @($heapRows | Where-Object { $_.unit -eq "bytes" })
+        Assert-That ($heapByteRows.Count -gt 0) "the dump reports byte figures ($($heapByteRows.Count))"
+        Assert-That (@($heapByteRows | Where-Object { $_.attributesJson -notlike "*basis*" }).Count -eq 0) `
+            "every byte figure carries the basis it was counted on"
+        Assert-That (@($heapByteRows | Where-Object { $_.attributesJson -notlike "*not a retained size*" }).Count -eq 0) `
+            "every byte figure states that it is not a retained size"
+        Assert-That (@($heapByteRows | Where-Object { $_.attributesJson -notlike "*header*" }).Count -eq 0) `
+            "every byte figure states that object headers are excluded"
+        # Rows with no attributes are omitted-property rows: the backend leaves null fields out of its
+        # JSON, so a plain count carries no attributesJson at all. Read through Get-Prop, which is what
+        # the absence means.
+        Assert-That (@($heapRows | Where-Object { (Get-Prop $_ "attributesJson") -like "*severity*" }).Count -eq 0) `
+            "no heap measurement carries a severity"
+        Assert-That (@($heapRows | Where-Object { (Get-Prop $_ "attributesJson") -like "*threshold*" }).Count -eq 0) `
+            "no heap measurement carries a threshold"
+
+        # The census is three parts of one whole, and each part has a count and a byte figure. If the
+        # parts and the whole disagree, one of them is wrong and the other is not the answer.
+        $heapCount = @($heapRows | Where-Object { $_.metricKey -eq "heapdump.objects.count" })[0]
+        $heapBytes = @($heapRows | Where-Object { $_.metricKey -eq "heapdump.objects.bytes" })[0]
+        $instanceCount = @($heapRows | Where-Object { $_.metricKey -eq "heapdump.instances.count" })[0]
+        $objectArrayCount = @($heapRows | Where-Object { $_.metricKey -eq "heapdump.arrays.object.count" })[0]
+        $primitiveCount = @($heapRows | Where-Object { $_.metricKey -eq "heapdump.arrays.primitive.count" })[0]
+        Assert-That (($instanceCount.value + $objectArrayCount.value + $primitiveCount.value) -eq $heapCount.value) `
+            "the three parts of the census account for every object"
+        $instanceBytes = @($heapRows | Where-Object { $_.metricKey -eq "heapdump.instances.bytes" })[0]
+        $objectArrayBytes = @($heapRows | Where-Object { $_.metricKey -eq "heapdump.arrays.object.bytes" })[0]
+        $primitiveBytes = @($heapRows | Where-Object { $_.metricKey -eq "heapdump.arrays.primitive.bytes" })[0]
+        Assert-That (($instanceBytes.value + $objectArrayBytes.value + $primitiveBytes.value) -eq $heapBytes.value) `
+            "the three parts of the census account for every recorded byte"
+
+        # The tables are cut at twenty and say so. A table that quietly showed twenty of nine hundred
+        # types would be read as the whole heap.
+        $observedTypes = @($heapRows | Where-Object { $_.metricKey -eq "heapdump.types.bytes.observed" })[0]
+        $reportedTypes = @($heapRows | Where-Object { $_.metricKey -eq "heapdump.types.bytes.reported" })[0]
+        Assert-That ($observedTypes.value -gt 20) `
+            "the dump holds more types than the table lists ($($observedTypes.value))"
+        Assert-That ($reportedTypes.value -eq 20) "the type table stops at the cap (TOP_N)"
+        $typeByteRows = @($heapRows | Where-Object { $_.metricKey -eq "heapdump.types.bytes" })
+        Assert-That ($typeByteRows.Count -eq 20) "exactly twenty type rows are written"
+        Assert-That (@($typeByteRows | Where-Object { [string]::IsNullOrWhiteSpace((Get-Prop $_ "scope")) }).Count -eq 0) `
+            "every type row names the type it is about"
+        Assert-That (@($typeByteRows | Where-Object { (Get-Prop $_ "attributesJson") -notlike "*shareBasis*" }).Count -eq 0) `
+            "every type row says what its share is a share of"
+        $typeObjectRows = @($heapRows | Where-Object { $_.metricKey -eq "heapdump.types.objects" })
+        Assert-That ($typeObjectRows.Count -eq 20) "the table by object count is written too"
+
+        # Roots are where a collector starts, and the kinds are a fact about the JVM. The count of
+        # kinds must add up to the count of roots, or one of the two numbers is not what it says.
+        $rootCount = @($heapRows | Where-Object { $_.metricKey -eq "heapdump.roots.count" })[0]
+        $rootKindRows = @($heapRows | Where-Object { $_.metricKey -eq "heapdump.roots.kind.count" })
+        Assert-That ($rootKindRows.Count -gt 0) "the dump reports the kinds of root it found"
+        $rootKindsTotal = 0
+        $rootKindRows | ForEach-Object { $rootKindsTotal = $rootKindsTotal + [int]$_.value }
+        Assert-That ($rootKindsTotal -eq [int]$rootCount.value) `
+            "the root kinds account for every root ($rootKindsTotal of $($rootCount.value))"
+
+        $largestObject = @($heapRows | Where-Object { $_.metricKey -eq "heapdump.object.bytes.max" })[0]
+        Assert-That (-not [string]::IsNullOrWhiteSpace((Get-Prop $largestObject "scope"))) `
+            "the largest single object is reported with its type"
+        Assert-That ($largestObject.value -gt 0) "the largest single object has a size"
+
+        # Three readers, one repository: the heap run is newer, and neither older run's rows moved.
+        $jfrStillThere = Get-Json "$api/repositories/$repositoryId/runtime/measurements?runId=$runtimeRunId&size=1"
+        Assert-That ($jfrStillThere.totalItems -eq $measurements.totalItems) `
+            "a heap-dump run does not replace the recording's measurements"
+        $heapRowsAgain = Get-Json "$api/repositories/$repositoryId/runtime/measurements?runId=$($heapFinal.analysisRunId)&size=1"
+        Assert-That ($heapRowsAgain.totalItems -eq $heapRows.Count) `
+            "a heap-dump run keeps its own measurements under its own run id"
+    }
+}
 
 # ---------------------------------------------------------------- retention on delete
 Write-Host "`n== artefact store on delete ==" -ForegroundColor Cyan

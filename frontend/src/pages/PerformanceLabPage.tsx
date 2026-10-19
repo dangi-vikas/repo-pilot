@@ -56,7 +56,23 @@ const ARTIFACT_TYPES: RuntimeArtifactType[] = [
 const KINDS: MetricKind[] = ["DURATION", "COUNTER", "GAUGE", "SIZE"];
 
 /** The job types this screen produces and reports. */
-const RUNTIME_JOB_TYPES = ["JFR_ANALYSIS"];
+const RUNTIME_JOB_TYPES = ["JFR_ANALYSIS", "THREAD_DUMP_ANALYSIS", "HEAP_ANALYSIS"];
+
+/**
+ * The namespace each reader puts in front of its metric keys.
+ *
+ * A metric key is `<namespace>.<family>.<leaf>`, and the backend's `metric` filter is a key prefix,
+ * so filtering by family means filtering by `<namespace>.<family>`. The namespace is read from the
+ * run's artefact type rather than assumed to be `jfr`: a thread dump's keys start `threaddump.` and a
+ * heap dump's start `heapdump.`, and a family filter that sent `jfr.threads` would quietly return
+ * nothing for a run that has rows. A type this map does not know is filtered family-wide rather than
+ * wrongly, so an unlisted reader shows everything instead of hiding it.
+ */
+const METRIC_NAMESPACE: Partial<Record<RuntimeArtifactType, string>> = {
+  JFR_RECORDING: "jfr",
+  THREAD_DUMP: "threaddump",
+  HEAP_DUMP: "heapdump",
+};
 
 /**
  * The Performance Lab: recordings in, measurements out.
@@ -76,7 +92,7 @@ export function PerformanceLabPage() {
       <>
         <PageHeader
           title="Performance Lab"
-          description="Upload a recording, analyse it locally, and read what it measured."
+          description="Upload a runtime artefact — a JFR recording, a thread dump or a heap dump — analyse it locally, and read what it measured."
         />
         <RepositoryRequired />
       </>
@@ -105,16 +121,25 @@ function PerformanceLab({ repositoryId }: { repositoryId: Uuid }) {
 
   const hasRun = hasValue(summary.data?.runId);
 
+  // Which reader produced the rows under this header, and therefore what their keys start with.
+  const artifactType = summary.data?.artifactType ?? null;
+  const namespace = artifactType === null ? "" : (METRIC_NAMESPACE[artifactType] ?? "");
+
   const [family, setFamily] = useState<string>("");
   const [kind, setKind] = useState<MetricKind | "">("");
 
   const measurementFilters = useMemo(
     () => ({
-      // The backend matches `metric` as a key prefix, so a family filter is `jfr.<family>`.
-      metric: family === "" ? undefined : `jfr.${family}`,
+      // The backend matches `metric` as a key prefix, so a family filter carries the namespace of
+      // whichever reader produced the rows. Without it, a family from a thread dump would be sent
+      // as `jfr.threads` and match nothing.
+      metric:
+        family === "" || namespace === ""
+          ? undefined
+          : `${namespace}.${family}`,
       kind: kind === "" ? undefined : kind,
     }),
-    [family, kind],
+    [family, kind, namespace],
   );
 
   const measurements = useRuntimeMeasurements(repositoryId, measurementFilters, {
@@ -135,13 +160,13 @@ function PerformanceLab({ repositoryId }: { repositoryId: Uuid }) {
     <>
       <PageHeader
         title="Performance Lab"
-        description="Recordings and dumps are read locally with the JDK's own Flight Recorder API. Every number is a measurement of a specific run, never an estimate."
+        description="Recordings, thread dumps and heap dumps are read locally: JFR through the JDK's own Flight Recorder API, a thread dump through a parser for the format jstack writes, a heap dump through a parser for the HPROF files jcmd writes. Every number is a measurement of a specific run, never an estimate."
       />
 
       {runtimeJobActive ? (
         <div style={{ marginBottom: "var(--space-4)" }}>
-          <Banner tone="info" title="A recording is being analysed">
-            The job is running on the backend. Measurements appear below when it finishes.
+          <Banner tone="info" title="Runtime evidence is being analysed">
+            A job is running on the backend. Measurements appear below when it finishes.
           </Banner>
         </div>
       ) : null}
@@ -152,7 +177,7 @@ function PerformanceLab({ repositoryId }: { repositoryId: Uuid }) {
         <Metric
           label="Measurements"
           value={formatNumber(summary.data?.measurementCount ?? 0)}
-          foot={hasRun ? "From the newest run" : "No recording analysed yet"}
+          foot={hasRun ? "From the newest run" : "No artefact analysed yet"}
         />
         <Metric
           label="Artefacts"
@@ -184,15 +209,15 @@ function PerformanceLab({ repositoryId }: { repositoryId: Uuid }) {
           onRetry={() => void summary.refetch()}
         />
       ) : !hasRun ? (
-        <Card title="No recording has been analysed">
+        <Card title="No runtime artefact has been analysed">
           <EmptyState
             icon="gauge"
             title="Nothing has been measured yet"
             message={
               <>
-                Upload a JFR recording above and analyse it. This state is deliberately not the same
-                as a run that measured nothing: RepoPilot will only report numbers a recording
-                actually contains.
+                Upload a recording, a thread dump or a heap dump above and analyse it. This state is
+                deliberately not the same as a run that measured nothing: RepoPilot will only report
+                numbers a file actually contains.
               </>
             }
           />
@@ -270,7 +295,7 @@ function PerformanceLab({ repositoryId }: { repositoryId: Uuid }) {
 
       <div style={{ marginTop: "var(--space-5)" }}>
         <Card
-          title="Recording analysis jobs"
+          title="Runtime analysis jobs"
           actions={
             <span className="rp-faint" style={{ fontSize: "var(--text-xs)" }}>
               {RUNTIME_JOB_TYPES.join(", ")}
@@ -283,7 +308,7 @@ function PerformanceLab({ repositoryId }: { repositoryId: Uuid }) {
           ) : (
             <JobTable
               jobs={runtimeJobs}
-              emptyMessage="No recording has been analysed yet. Upload one above and it will appear here with its outcome."
+              emptyMessage="No runtime artefact has been analysed yet. Upload one above and it will appear here with its outcome."
             />
           )}
         </Card>
@@ -297,7 +322,7 @@ function PerformanceLab({ repositoryId }: { repositoryId: Uuid }) {
  *
  * The file goes to the backend as multipart and is stored by content hash. The type is
  * inferred from the extension unless it is stated, and stating it wrongly is caught on the
- * server: a file that is not a recording is refused with the reason, not analysed into
+ * server: a file that is not what it claims is refused with the reason, not analysed into
  * nothing.
  */
 function UploadCard({
@@ -313,11 +338,12 @@ function UploadCard({
   const [type, setType] = useState<RuntimeArtifactType | "">("");
   const [uploaded, setUploaded] = useState<RuntimeArtifactView | null>(null);
 
-  const memoryBearing = type === "HEAP_DUMP" || type === "THREAD_DUMP";
+  const memoryBearing = type === "HEAP_DUMP";
+  const threadDumpBearing = type === "THREAD_DUMP";
 
   return (
     <Card
-      title="Upload a recording"
+      title="Upload a runtime artefact"
       actions={
         <span className="rp-faint" style={{ fontSize: "var(--text-xs)" }}>
           Stored on this machine only
@@ -408,15 +434,33 @@ function UploadCard({
 
       <p className="rp-faint" style={{ fontSize: "var(--text-xs)", marginTop: "var(--space-2)" }}>
         The file is streamed to the backend's data directory and addressed by its SHA-256. Only
-        derived numbers are ever returned; the recording itself stays on this machine.
+        derived numbers are ever returned; the file itself stays on this machine.
       </p>
 
       {memoryBearing ? (
         <div style={{ marginTop: "var(--space-3)" }}>
           <Banner tone="warning" title="This file contains process memory">
-            Heap and thread dumps can contain strings from the running process, including data it
-            had just read. RepoPilot stores it locally and never uploads it anywhere, but treat the
-            file and the data directory as sensitive.
+            A heap dump is the literal contents of the process's heap, including any string or
+            credential that was live in it. RepoPilot stores it locally and never uploads it
+            anywhere, but treat the file and the data directory as sensitive.
+          </Banner>
+        </div>
+      ) : null}
+
+      {/*
+        A thread dump is not process memory, and saying that it is would teach an operator to
+        distrust a warning that matters elsewhere. What it does reveal is stated precisely instead:
+        synchronisation structure and every thread and frame name, which is the application's own
+        code, and no memory contents at all.
+      */}
+      {threadDumpBearing ? (
+        <div style={{ marginTop: "var(--space-3)" }}>
+          <Banner tone="info" title="This file contains no process memory">
+            A thread dump records what each thread was doing — its state, its stack of class and
+            method names, and the monitors it held or waited for. It is not a copy of the heap and
+            contains none of the values in memory, but it does describe your application's structure
+            and it names your threads, so treat the file as internal. It is stored locally and never
+            uploaded anywhere.
           </Banner>
         </div>
       ) : null}
@@ -487,9 +531,10 @@ function RunCard({
         because no policy was applied.
       */}
       <Banner tone="info" title="No threshold was applied and no severity was assigned">
-        These are quantities read from one recording of one JVM on one machine. RepoPilot does not
-        decide whether a value is good or bad without a policy you supplied, so it reports the
-        measurement and its limits and leaves the judgement to you.
+        These are quantities read from one runtime artefact: one process, on one machine, over one
+        window or one instant. RepoPilot does not decide whether a value is good or bad without a
+        policy you supplied, so it reports the measurement and its limits and leaves the judgement to
+        you.
       </Banner>
 
       {provenance !== null ? (
@@ -511,6 +556,8 @@ function RunCard({
  */
 function provenanceItems(provenance: RuntimeProvenance): Array<{ label: string; value: ReactNode }> {
   const recording = provenance.recording ?? {};
+  const dump = provenance.dump ?? {};
+  const heap = provenance.heap ?? {};
   const environment = provenance.environment ?? {};
   const produced = provenance.produced ?? {};
 
@@ -558,11 +605,60 @@ function provenanceItems(provenance: RuntimeProvenance): Array<{ label: string; 
   add("Events read", recording.events != null ? formatNumber(recording.events) : null);
   add("Event types", recording.eventTypes != null ? formatNumber(recording.eventTypes) : null);
 
+  // The header's timestamp, with the reader's own basis for it alongside rather than paraphrased
+  // here. The readers disagree about what it means and each is right: a thread dump writes local
+  // time with no zone, so it is shown as text and never parsed into an instant, while a heap dump
+  // writes UTC and the reader converted it. Which one this is changes the value by hours.
+  add("Dump taken", dump.takenAt);
+  add("Dump time basis", dump.takenAtBasis);
+  if (hasValue(dump.threads)) {
+    const own = hasValue(dump.threadsWithoutJavaState)
+      ? `, ${formatNumber(dump.threadsWithoutJavaState ?? 0)} without a Java state`
+      : "";
+    add(
+      "Threads",
+      `${formatNumber(dump.threads ?? 0)} total, ${formatNumber(dump.javaThreads ?? 0)} with a Java state${own}`,
+    );
+  }
+  add("Deadlock cycles reported", dump.deadlocks != null ? formatNumber(dump.deadlocks) : null);
+  add(
+    "Contended monitors",
+    dump.contendedMonitors != null ? formatNumber(dump.contendedMonitors) : null,
+  );
+
+  // A heap dump's header and the census behind the measurement rows. The byte figures are repeated
+  // here only as the reader's own totals, and the measurement rows carry the same numbers with their
+  // basis attached; nothing on this list is a retained size.
+  add("Heap dump format", environment.formatVersion);
+  add(
+    "Identifier size",
+    environment.identifierSize != null
+      ? `${formatNumber(environment.identifierSize)} bytes`
+      : null,
+  );
+  add("Strings in the file", dump.strings != null ? formatNumber(dump.strings) : null);
+  add("Objects recorded", heap.objects != null ? formatNumber(heap.objects) : null);
+  add("Recorded bytes", heap.objectBytes != null ? formatBytes(heap.objectBytes) : null);
+  add("Types", heap.types != null ? formatNumber(heap.types) : null);
+  add(
+    "Objects without a type",
+    heap.objectsWithoutAType != null ? formatNumber(heap.objectsWithoutAType) : null,
+  );
+  add(
+    "Retained sizes computed",
+    produced.retainedSizesComputed === true
+      ? "yes"
+      : produced.retainedSizesComputed === false
+        ? "no — RepoPilot builds no dominator tree, so it reports no retained size"
+        : null,
+  );
+
   // The name and the build string are shown as the file states them, separately. Re-deriving a
   // shortened label here would mean re-implementing the backend's parsing, and a second
   // implementation of the same string handling is a second place it can be wrong. The run summary
-  // above already carries the readable form.
-  add("VM", environment.jvmName);
+  // above already carries the readable form. A heap dump names no VM at all, and the reader's
+  // sentence saying so is the honest value for this row.
+  add("VM", environment.jvmName ?? dump.jvmName);
   add("VM build", environment.jvmVersion);
   add("VM started", environment.jvmStartTime != null ? formatInstant(environment.jvmStartTime) : null);
   add("Process id", environment.processId != null ? formatNumber(environment.processId) : null);
@@ -782,7 +878,7 @@ function ArtifactsCard({
         <EmptyState
           icon="file"
           title="No artefacts"
-          message="Nothing has been uploaded for this repository. Upload a recording above; it is stored whether or not this build can read it."
+          message="Nothing has been uploaded for this repository. Upload a runtime artefact above; it is stored whether or not this build can read it."
         />
       ) : (
         <div className="table-wrap">

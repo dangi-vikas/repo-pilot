@@ -62,8 +62,8 @@ export const DESTINATIONS: Destination[] = [
     label: "Memory Analysis",
     icon: "memory",
     section: "Performance",
-    description: "Heap dump retention analysis and allocation pressure.",
-    available: false,
+    description: "What one heap dump recorded: objects, types and the bytes they hold.",
+    available: true,
   },
   {
     id: "concurrency",
@@ -71,8 +71,8 @@ export const DESTINATIONS: Destination[] = [
     label: "Concurrency Inspector",
     icon: "threads",
     section: "Performance",
-    description: "Thread dumps, lock contention and deadlock candidates.",
-    available: false,
+    description: "Thread states, monitor contention and the deadlocks a dump reported.",
+    available: true,
   },
   {
     id: "investigation",

@@ -2,6 +2,7 @@ package dev.repopilot.analysis;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -19,6 +20,16 @@ public interface AnalysisRunRepository extends JpaRepository<AnalysisRun, UUID> 
      * findings describe.
      */
     Optional<AnalysisRun> findFirstByRepositoryIdAndRunTypeOrderByStartedAtDesc(UUID repositoryId, AnalysisRunType runType);
+
+    /**
+     * The most recent run of any of several pipelines, for "the newest runtime evidence".
+     *
+     * <p>Needed because runtime evidence now has more than one reader: a repository can have a JFR
+     * recording and a thread dump analysed, and asking for one pipeline by name would report the
+     * other as absent.
+     */
+    Optional<AnalysisRun> findFirstByRepositoryIdAndRunTypeInOrderByStartedAtDesc(UUID repositoryId,
+                                                                                Collection<AnalysisRunType> runTypes);
 
     Optional<AnalysisRun> findFirstByRevisionIdAndRunTypeOrderByStartedAtDesc(UUID revisionId, AnalysisRunType runType);
 

@@ -12,32 +12,6 @@ interface Plan {
 }
 
 const PLANS: Record<string, Plan> = {
-  memory: {
-    blockedBy: "Heap dump parsing is not implemented, so there is nothing measured to display.",
-    exists: [
-      "Repository and revision scoping, so a dump can be tied to the exact code revision it came from.",
-      "The same job and storage plumbing JFR analysis will use.",
-    ],
-    planned: [
-      "Parse a heap dump offline and report dominator trees and retained sizes for classes that exist in the index.",
-      "Correlate retained-set classes with indexed types to name the owning code.",
-      "Keep the dump on disk and report only derived numbers — never upload the heap.",
-    ],
-    jobTypes: ["HEAP_ANALYSIS"],
-  },
-  concurrency: {
-    blockedBy: "Thread dumps are not collected or analysed yet, so there is nothing to show.",
-    exists: [
-      "Indexed call edges, which is the static half of the picture: what calls what.",
-      "Synchronised and locking constructs are already visible in the Code Explorer as symbols.",
-    ],
-    planned: [
-      "Capture live thread dumps against a target process, or import existing dumps.",
-      "Detect deadlock cycles and long-held monitors and report them as runtime measurements with the dump attached.",
-      "Overlay lock wait evidence onto the static call graph instead of guessing at contention from source alone.",
-    ],
-    jobTypes: ["THREAD_DUMP_ANALYSIS"],
-  },
   investigation: {
     blockedBy:
       "The AI provider abstraction and health reporting exist, but the investigation pipeline — retrieval, prompting and citation validation — is not written yet.",

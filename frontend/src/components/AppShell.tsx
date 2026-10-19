@@ -8,7 +8,9 @@ import { TopBar } from "@/components/TopBar";
 import { AnalysisHistoryPage } from "@/pages/AnalysisHistoryPage";
 import { CapabilityPage } from "@/pages/CapabilityPage";
 import { CodeExplorerPage } from "@/pages/CodeExplorerPage";
+import { ConcurrencyInspectorPage } from "@/pages/ConcurrencyInspectorPage";
 import { DependencyGraphPage } from "@/pages/DependencyGraphPage";
+import { MemoryPage } from "@/pages/MemoryPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { OverviewPage } from "@/pages/OverviewPage";
 import { PerformanceLabPage } from "@/pages/PerformanceLabPage";
@@ -42,6 +44,10 @@ function elementFor(destinationId: string) {
       return <DependencyGraphPage />;
     case "performance":
       return <PerformanceLabPage />;
+    case "concurrency":
+      return <ConcurrencyInspectorPage />;
+    case "memory":
+      return <MemoryPage />;
     case "history":
       return <AnalysisHistoryPage />;
     case "settings":

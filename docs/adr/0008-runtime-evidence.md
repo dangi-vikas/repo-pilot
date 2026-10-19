@@ -91,6 +91,9 @@ artefact that produced them, and RepoPilot applies no thresholds to them.**
    Refusing the upload would discard evidence the operator already collected; accepting and
    pretending to analyse it would be worse. A request that cannot start fails *before* any run
    row exists, so there is never a run that failed for a reason the API could have stated.
+   *(Amended: heap dumps and thread dumps have since been given readers — ADR 0009, ADR 0010.
+   A benchmark result is the remaining type that is stored unread, and it is the one this
+   decision now covers in practice.)*
 
 10. **Uploads are streamed, not buffered.** The multipart part is written to a scratch file,
     hashed on a second pass, and moved into place with `ATOMIC_MOVE`. Peak memory is one hash
@@ -129,5 +132,8 @@ artefact that produced them, and RepoPilot applies no thresholds to them.**
   gzip, an empty file) without touching the JDK API. A structurally plausible but corrupt
   recording still reaches `RecordingFile` and still holds a descriptor until GC; this is
   recorded as a limitation rather than papered over with a `System.gc()` in production code.
-- Memory and concurrency analysis are not implemented, and they inherit this contract: a heap
-  dump's retained sizes are measurements with a provenance, not findings with a severity.
+- ~~Memory and concurrency analysis are not implemented, and they inherit this contract: a heap
+  dump's retained sizes are measurements with a provenance, not findings with a severity.~~
+  *(Amended: both now exist — a thread dump in ADR 0009 and a heap dump in ADR 0010 — and both kept
+  this contract. Neither produces a finding: a heap dump's byte figures are measurements with a
+  provenance rather than severities, and it computes no retained size at all.)*

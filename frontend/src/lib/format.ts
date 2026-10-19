@@ -247,10 +247,13 @@ export function formatSampleScope(
 }
 
 /**
- * The family segment of a metric key: `gc` from `jfr.gc.pause.max`.
+ * The family segment of a metric key: `gc` from `jfr.gc.pause.max`, `threads` from
+ * `threaddump.threads.count`.
  *
- * The backend groups by this segment in `byMetricFamily`, so the UI groups by the same
- * rule rather than re-deriving one that could disagree with the counts it was given.
+ * Every key has the same shape — `<reader>.<family>.<leaf>` — so this rule holds for any reader
+ * that states its own namespace. The backend groups by this segment in `byMetricFamily`, so the UI
+ * groups by the same rule rather than re-deriving one that could disagree with the counts it was
+ * given.
  */
 export function metricFamily(metricKey: string): string {
   const segments = metricKey.split(".");
@@ -261,6 +264,12 @@ export function metricFamily(metricKey: string): string {
 export function metricLeaf(metricKey: string): string {
   const segments = metricKey.split(".");
   return segments.length > 2 ? segments.slice(2).join(".") : metricKey;
+}
+
+/** The namespace segment of a metric key: `jfr`, `threaddump`. Which reader produced the row. */
+export function metricNamespace(metricKey: string): string {
+  const segments = metricKey.split(".");
+  return segments.length > 1 ? (segments[0] ?? metricKey) : "";
 }
 
 export function formatInstant(instant: string | null | undefined): string {

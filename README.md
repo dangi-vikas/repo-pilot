@@ -25,6 +25,17 @@ against indexed evidence by the backend before you see it.
 | [Performance Lab — upload](docs/screenshots/performance-lab-upload.png) | A recording is stored by content hash on this machine; the panels underneath count what a run produced |
 | [Performance Lab — run](docs/screenshots/performance-lab-run.png) | One run in full: kind breakdown, the summary, and *"No threshold was applied and no severity was assigned"* followed by the recording's provenance — JVM, build, OS, CPU, memory |
 | [Performance Lab — measurements](docs/screenshots/performance-lab-measurements.png) | Measurements with scope, kind, value with its unit, reduction and sample count; the scope column is the only one clipped, and only visually |
+| [Performance Lab — a thread dump](docs/screenshots/performance-lab-thread-dump.png) | The same screen reading a different artefact kind: `17 TOTAL`, `THREAD-DUMP-READER=1.0.0`, and provenance rows for when the dump was taken, threads with and without a Java state, and the deadlock cycles the JVM reported |
+| [Concurrency Inspector](docs/screenshots/concurrency-inspector.png) | Which dump the report describes, the census (60 thread blocks, 42 with a Java state, 18 of the JVM's own), and the file with its hash |
+| [Concurrency Inspector — states](docs/screenshots/concurrency-inspector-states.png) | All four states with their share of Java threads and the detail the dump gave (`2 on object monitor`, `1 parking`), and the caveat underneath: *HotSpot reports a thread blocked in a native call … as `RUNNABLE`, so this is not a count of threads using a CPU* |
+| [Concurrency Inspector — deadlock](docs/screenshots/concurrency-inspector-deadlock.png) | A cycle the JVM's own detector reported, as thread → monitor → holder edges, and *"RepoPilot repeated them; it did not search for the cycle itself"* |
+| [Concurrency Inspector — empty](docs/screenshots/concurrency-inspector-empty.png) | The zero state names the command to take a dump, and states that `jcmd Thread.dump_to_file` is refused in both its formats, and why |
+| [Performance Lab — a heap dump](docs/screenshots/performance-lab-heap-dump.png) | Selecting *Heap Dump* before upload: the process-memory warning, and the three readings a heap run produces (`61` measurements from a 9.6 MB dump, `7` metric families, `HEAP-DUMP-READER=1.0.0`) |
+| [Memory Analysis](docs/screenshots/memory-analysis.png) | One heap dump: 71,754 objects holding 4.1 MB of recorded data across 827 types, the largest single object (`256 KB of byte[]`) and the file with its hash |
+| [Memory Analysis — the census](docs/screenshots/memory-census.png) | The three parts of the heap with their object counts, recorded bytes and share of the whole, under the basis: *"the bytes are what the dump recorded for the objects themselves: field values and element data, with no object header and no class metadata"* |
+| [Memory Analysis — types by bytes](docs/screenshots/memory-types-bytes.png) | The largest types by recorded bytes, with shares, and the disclosure underneath: `20 of 827 type(s) shown` |
+| [Memory Analysis — what it is not](docs/screenshots/memory-roots.png) | The GC roots by kind (1,342 roots: `sticky-class`, `jni-global`, `java-frame`, `thread-object`) and the footer: the census is of the objects the process was *still holding* — taking a dump collects first — with no retained size, no rate, no threshold and no severity |
+| [Memory Analysis — empty](docs/screenshots/memory-empty.png) | The zero state gives the two commands that write a dump, and states that a gzip stream and a class histogram are refused by name |
 | [Settings](docs/screenshots/settings.png) | Connection, sandbox roots, AI provider status, privacy controls |
 | [Command palette](docs/screenshots/command-palette.png) | `Ctrl K` |
 | [Capability page](docs/screenshots/capability-not-available.png) | What an unimplemented destination says instead of showing empty results |
@@ -48,7 +59,7 @@ citation is real:
 | --- | --- | --- |
 | **Confirmed observation** | A fact read out of the index: a file, a symbol, a line, a resolved reference | JavaParser + the resolver |
 | **Static-analysis finding** | A rule fired, with the rule identified | PMD / SpotBugs / built-in checks |
-| **Runtime measurement** | A number sampled from a process or a recording | JFR, thread dumps, benchmarks |
+| **Runtime measurement** | A number sampled from a process, a recording or a dump of it | JFR, thread dumps, heap dumps, benchmarks |
 | **AI hypothesis** | A model's proposal, shown with its evidence and never as fact | Ollama |
 
 A file that fails to parse is reported as `PARSED_WITH_PROBLEMS`, never as "parsed". A
@@ -84,16 +95,19 @@ rather than pretending.
 | Bearer-token auth, loopback bind | **Working** | Single-operator model; CSRF disabled by design ([ADR 0005](docs/adr/0005-auth-model.md)) |
 | Runtime evidence — JFR ingestion and reading | **Working** | Upload a recording, stored by SHA-256 under `<data-dir>/artifacts`; the JDK's Flight Recorder API reads it in process. 101 measurements from a 3.3 s live recording |
 | Runtime evidence — measurement model | **Working** | `runtime_measurement`: unit, kind, reduction (`COUNT`/`SUM`/`MEAN`/`MAX`), sample count, scope and per-metric caveats. No thresholds, no severity, no percentiles — by design ([ADR 0008](docs/adr/0008-runtime-evidence.md)) |
-| Runtime evidence — Performance Lab | **Working** | Run header, provenance, measurements filtered by family and kind, artefacts with their support status |
+| Runtime evidence — Performance Lab | **Working** | Run header, provenance, measurements filtered by family and kind, artefacts with their support status. Hosts both readers, and the family filter follows the artefact type |
+| Runtime evidence — thread dumps | **Working** | The plain-text `Thread.print` / `jstack` / `kill -3` dump: thread states, monitor contention and the deadlocks the JVM's own detector reported. The two `Thread.dump_to_file` formats are refused by name — they carry no states and no lock ownership, so a report from them would be zeros ([ADR 0009](docs/adr/0009-thread-dump-evidence.md)) |
+| Concurrency Inspector | **Working** | One analysed dump: states with share bars and the `RUNNABLE` caveat, deadlock cycles as thread → monitor → holder, the contention table, and the depth/held maxima. No thresholds, no severity |
+| Runtime evidence — heap dumps | **Working** | The binary HPROF file `jmap`, `jcmd GC.heap_dump` and the OOM hook write, read in two passes: the class table, then the heap. A gzip stream, a class histogram and a thread dump are each refused by name, with the command that produces a readable file ([ADR 0010](docs/adr/0010-heap-dump-evidence.md)) |
+| Memory Analysis | **Working** | One analysed dump: the census (instances, arrays and their recorded bytes), the two type tables with their shares and the `TOP_N = 20` disclosure, the GC roots by kind, and the largest single object. **No retained size, no leak verdict, no threshold, no severity** — every byte row states its basis |
 | [Local AI provider abstraction](docs/adr/0002-local-first-ai.md) | **Partial** | Ollama client, health, capability reporting. No investigation flow yet |
-| Heap / thread-dump analysis | **Not yet** | Artefacts of those types are accepted, stored, and refused by name — an unreadable dump is never silently "analysed" |
 | Benchmark import + regression view | **Not yet** | Corpus and measurement scripts exist; the `BENCHMARK_IMPORT` handler does not |
 | AI investigation with citation checking | **Not yet** | The evidence rules are designed; the flow is not implemented |
 | Embeddings / pgvector | **Not yet** | Off by default; deliberately not started without a proven need |
 
 Submitting a job type that has no handler returns a clear `UNSUPPORTED_INPUT` error instead
-of queueing work that can never run. The three destinations without a backend render an
-explicit capability page.
+of queueing work that can never run. The one destination without a backend — AI investigation —
+renders an explicit capability page.
 
 ---
 
@@ -169,7 +183,7 @@ service boundaries ([ADR 0001](docs/adr/0001-modular-monolith.md)).
 ```
                     ┌──────────────────────────── frontend (React + TS, strict) ──────┐
                     │  Overview · Code Explorer · Dependency Graph · History · Settings│
-                    │  AI Investigation · Performance Lab · Memory · Concurrency (plan)│
+                    │  Performance Lab · Concurrency Inspector · Memory · AI (planned) │
                     └───────────────────────────────┬──────────────────────────────────┘
                                           bearer token │ /api/v1
                     ┌───────────────────────────────▼──────────────────────────────────┐
@@ -355,6 +369,95 @@ would have been wrong:
 
 The full reasoning is in [ADR 0008](docs/adr/0008-runtime-evidence.md).
 
+### And what a thread dump produces
+
+The same contract, from a text snapshot instead of a recording. Two real dumps of live JVMs on this
+machine:
+
+| Read from the dump | `td-rich.txt` (`jcmd … Thread.print`) | `td-deadlock.txt` |
+| --- | --- | --- |
+| Measurements written | 11 | 17 |
+| Thread blocks | 60 | 26 |
+| …with a Java state | 42 | 13 |
+| …the JVM's own threads | 18 | 13 |
+| States | 22 `RUNNABLE`, 11 `TIMED_WAITING`, 9 `WAITING`, 0 `BLOCKED` | 9 `RUNNABLE`, 2 `BLOCKED`, 1 `WAITING`, 1 `TIMED_WAITING` |
+| Deadlock cycles reported by the JVM | 0 | 1, involving 2 threads |
+| Contended monitors | 0 | 2 |
+| Thresholds applied / severities assigned | none / none | none / none |
+
+Four refusals are worth naming here too:
+
+- **A dump is not a profile.** Nothing in it is a rate or a trend. The screen shows the instant and
+  says so in its footer, on every render.
+- **`RUNNABLE` is not "on a CPU".** HotSpot reports a thread blocked in a native call as `RUNNABLE`;
+  on this very backend, twelve `reactor-http-nio-*` threads were `RUNNABLE` inside
+  `sun.nio.ch.WEPoll.wait`. The caveat travels on the measurement.
+- **Deadlocks are the JVM's, not ours.** The count is the dump's own `Found N deadlock.` line, and
+  the cycles are the edges the file printed. RepoPilot does not search for cycles: a cycle in a
+  snapshot is not proof that it persists.
+- **`Thread.dump_to_file` is refused, in both formats.** It writes stacks and no states, no lock
+  ownership and no deadlock section — a report from it would be a page of zeros indistinguishable
+  from a healthy JVM. The refusal names the command that produces a readable dump instead.
+
+The full reasoning is in [ADR 0009](docs/adr/0009-thread-dump-evidence.md).
+
+### And what a heap dump produces
+
+A census, not a memory model. Two dumps, taken with `jcmd <pid> GC.heap_dump`:
+
+| Read from the dump | A probe JVM of 4.6 MB, subject built to be counted | This backend, 178.6 MB |
+| --- | --- | --- |
+| Measurements written | 61 | 61 |
+| Objects | 18 501 — 11 081 instances and 7 420 arrays | 1 516 519 — 1 156 815 instances and 359 704 arrays |
+| Recorded bytes | 1 986 030 | 119 225 663 |
+| Types | 352 | 10 585, of which the tables list the top 20 |
+| Largest type | `byte[]`, 1 147 721 recorded bytes over 4 375 objects | `byte[]`, 62 964 506 recorded bytes over 175 171 objects |
+| Largest single object | 22 208 bytes of `java.lang.Object[]` | 4 194 304 bytes of `byte[]` |
+| GC roots | 819, by kind | 4 418, by kind |
+| Thresholds applied / severities assigned / retained sizes computed | none / none / **none** | none / none / **none** |
+
+The metric families are `objects`, `instances`, `arrays`, `types`, `roots`, `object` and `classes`.
+
+The probe dump is the one whose numbers can be checked, because the JVM held a population that was
+built to be counted. It was read twice, a second apart, by this reader and by
+`jcmd <pid> GC.class_histogram`, and the **object counts agreed exactly** for the three largest types
+while the byte figures deliberately did not:
+
+| Type | `-histo` objects | This reader | `-histo` estimate | Recorded bytes |
+| --- | ---: | ---: | ---: | ---: |
+| `byte[]` | 4 375 | **4 375** | 1 227 192 | 1 147 721 |
+| `java.lang.String` | 3 172 | **3 172** | 76 128 | 44 408 |
+| `HeapProbe$Node` | 500 | **500** | 12 000 | 10 000 |
+
+Two differences, both deliberate:
+
+- **The bytes are the dump's, not the JVM's.** A `Node` is 24 bytes to the JVM — a 12-byte header plus
+  a reference, an array reference and an `int` under compressed oops — and 20 as recorded, because the
+  dump writes identifiers at its own width rather than the width the JVM used in memory. Object
+  headers and class metadata are excluded by construction, so the same type sits lower here than in
+  `jmap -histo`. The two are not in conflict, and every byte row carries its basis in prose.
+- **The totals are not the same set of objects.** The histogram, taken before the dump, listed 19 403
+  objects; the dump's census is 18 501. Taking a dump collects first, so a census is of what the
+  process was *holding*, not of everything it had allocated — and that is also why `GC.heap_dump` has
+  an `-all` flag.
+
+What the numbers must not be read as:
+
+- **Recorded bytes are not occupied memory, and are not a retained size.** An instance's figure is the
+  field values the dump wrote, including inherited ones; an array's is its element data.
+- **No dominator tree, so no retained size and no leak verdict.** What would be freed if a type became
+  unreachable is a reachability computation over the whole graph, and this build does not run one.
+  `produced.retainedSizesComputed` is `false` in the provenance and the run summary says so.
+- **A dump is one instant.** Nothing here is a rate, a growth curve or a comparison with an earlier
+  dump. There is no `BENCHMARK_IMPORT` and no heap-over-time view.
+- **Three files are refused by name**, each with the command that produces a readable one: a gzip
+  stream (`GC.heap_dump -gz=<level>` — decompressing a 2.6 MB file into 10 MB inside a job is not
+  something an upload's size limit can defend against), a class histogram (`jmap -histo` /
+  `GC.class_histogram` — counts with no object graph behind them), and a thread dump (a different
+  artefact type with its own reader).
+
+The full reasoning is in [ADR 0010](docs/adr/0010-heap-dump-evidence.md).
+
 ---
 
 ## Security and privacy
@@ -379,12 +482,13 @@ posture is documented in [docs/security.md](docs/security.md); the rules that ma
 - **Uploaded artefacts are stored, not executed.** A recording lands under
   `<data-dir>/artifacts/<repoId>/<hash[0..2]>/<sha256>.<ext>`, named by its content rather than
   by the filename the client sent. Header validation happens before any JDK object is created,
-  and the file is read only by `jdk.jfr`. Heap and thread dumps contain process memory, so the
-  UI says so when you select one.
+  and the file is read only by `jdk.jfr`. A **heap** dump contains process memory and the UI says
+  so when you select one; a **thread** dump names threads, classes and frames but is not a copy of
+  the heap, and the UI says that instead rather than reusing the warning where it would be false.
 - **Deleting a repository deletes its bytes.** The records go in a transaction, the files go
   after it commits, and a startup sweep removes any artefact directory whose repository is no
   longer in the database. A heap dump is process memory, so "deleted" means deleted rather than
-  "no longer listed".
+  "no longer listed". Thread dumps are removed the same way, for the same reason.
 - **Uploads are bounded twice.** `spring.webflux.multipart.max-disk-usage-per-part` (2 GiB,
   `REPOPILOT_MAX_PART_DISK_BYTES`) stops an oversized stream while it is still arriving;
   `repopilot.analysis.max-artifact-size-bytes` (1 GiB) is the published limit, checked on the
@@ -392,7 +496,10 @@ posture is documented in [docs/security.md](docs/security.md); the rules that ma
   `413 LIMIT_EXCEEDED`, and neither leaves a scratch file behind. Raise them together.
 - **Nothing is sent anywhere by default.** The default provider is a local Ollama instance.
   The optional OpenAI-compatible provider is disabled unless a key is explicitly supplied.
-  A recording never leaves the machine: the reader runs in process.
+  A recording never leaves the machine: the reader runs in process. Neither does a thread dump,
+  which is parsed in process and whose stacks are never copied out of the file. Neither does a
+  heap dump, which is walked in two streaming passes and whose object contents are never copied
+  anywhere — the only thing stored from it is the census and, per type row, the type's own name.
 
 ---
 
@@ -403,7 +510,8 @@ backend/                     Spring Boot 3.5 · Java 21 · WebFlux + JPA
   src/main/java/dev/repopilot/
     api/v1/                  REST controllers
     analysis/                the analysis spine: analyzers, runner, findings, query views
-    runtime/                 JFR ingestion, artefact storage, measurement mapping, read path
+    runtime/                 artefact storage, measurement contract, read path, and the three
+                             readers: JFR (jfr/), thread dumps (threaddump/), heap dumps (heapdump/)
     codeindex/               scan · parse · resolve · persistence · query · index
     jobs/                    durable queue, workers, lifecycle, handlers
     repository/              registration, revisions, sandbox, scan policy
@@ -454,6 +562,8 @@ Architecture decisions are recorded as ADRs in [docs/adr](docs/adr):
 | [0006](docs/adr/0006-transaction-boundaries.md) | Short transactions; none held across slow work |
 | [0007](docs/adr/0007-static-analysis-contract.md) | Analyzers as pure functions, evidence owned by the framework |
 | [0008](docs/adr/0008-runtime-evidence.md) | Runtime measurements are not findings: no thresholds, no severity, no percentiles |
+| [0009](docs/adr/0009-thread-dump-evidence.md) | Thread dumps: read the rich format, report the JVM's own deadlock verdict, never search on its behalf |
+| [0010](docs/adr/0010-heap-dump-evidence.md) | Heap dumps: a census, not a memory model — recorded bytes with a stated basis, no retained size |
 
 Further reading:
 
@@ -473,10 +583,23 @@ Stated plainly, because a tool that hides these cannot be trusted with the other
 - **Static analysis covers Java, and only Java.** PMD is given no classpath and runs a
   single-threaded in-process ruleset, so rules that need type resolution cannot match. The
   built-in rules are name- and shape-based, and each finding says so in `limitations`.
-- **SpotBugs, heap/thread-dump analysis and AI investigation are not implemented yet.** The
+- **SpotBugs and AI investigation are not implemented yet.** The
   job types and the evidence rules exist; the handlers do not. Those screens say so, and an
-  artefact of a type this build cannot read is stored and refused by name rather than
-  analysed into nothing.
+  artefact of a type this build cannot read (a benchmark result) is stored and refused by name
+  rather than analysed into nothing.
+- **A heap dump is a census, never a memory model.** There is no dominator tree, so there is no
+  retained size, no leak verdict and no "this classloader is holding the heap" — a type near the
+  top of the table is a type whose objects *hold a lot of recorded data*, and the table that says
+  so carries that sentence. The byte figures exclude object headers and class metadata and are
+  therefore smaller than the JVM's own estimate for the same objects; two dumps are not compared,
+  so nothing here is a growth curve. A gzip stream and a class histogram are refused by name
+  rather than parsed into something that looks like an answer.
+- **A thread dump is one instant, and only one.** There is no trend, no comparison with an
+  earlier dump, no per-thread CPU time and no attribution of a slowdown to a frame; the dump
+  itself carries none of those, and RepoPilot does not invent them. The lock graph is the
+  dump's own — no inference from stack frames, and a holder is named only where the file
+  printed `- locked`. A UTF-16 dump *without* a byte-order mark is refused rather than guessed
+  at (a dump captured with `>` in PowerShell has one, and is read).
 - **A recording is read as aggregates, not as a timeline.** The reader produces counts, sums,
   means and maxima; per-event rows are not retained, so "what happened at t = 1.2 s" is not
   answerable from the database.

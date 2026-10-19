@@ -278,6 +278,48 @@ starts with `1F 8B`. The header is checked before any `jdk.jfr` object is create
 A file that fails the check is refused by name, and a compressed recording is told to be
 decompressed rather than being called "not a recording".
 
+**A thread dump is read, and it is not process memory.** The plain-text dump written by
+`jcmd <pid> Thread.print`, `jstack <pid>` or `kill -3 <pid>` is parsed in process, and the two
+`Thread.dump_to_file` formats are refused by name at upload because they carry no thread states, no
+lock ownership and no deadlock section. Two consequences are worth stating as guarantees:
+
+- `containsProcessMemory` is `false` for a thread dump and `true` only for a heap dump. A dump names
+  threads, classes and frames — it describes your code — but it is not a copy of the heap, and the
+  upload warning for the two is different because the risk is.
+- **The stacks are not copied anywhere.** They stay in the uploaded file, which is stored by hash and
+  never executed. The provenance written to the database holds the JVM name and version, the dump's
+  own timestamp (as text: the JVM records local time with no zone), and counts. Thread names are
+  stored only in a deadlock cycle's own measurement, where naming the deadlocked threads is the entire
+  point of the record.
+
+**A heap dump is process memory, and it is treated as such.** `containsProcessMemory` is `true` only
+for a heap dump, and the upload screen warns that the file is the literal contents of the process's
+heap, including any string or credential that was live in it. What that means for storage:
+
+- **Only the census is stored.** The reader walks the file in two streaming passes and writes counts
+  and byte totals. Object field values are read to advance and are never retained, copied or logged.
+- **The one piece of application data that reaches the database is a type name** — and only on the
+  measurement row derived from it (`heapdump.types.bytes`, `scope = the type`), which is the whole
+  point of that row. The provenance holds the header (format version, identifier width), the file size,
+  the string count, the census and the fact that no retained size was computed; the smoke test asserts
+  that no type name appears in it.
+- **Object identifiers, field values and reference edges are not stored at all**, so a heap dump cannot
+  be reconstructed — not even partially — from RepoPilot's database.
+- **A compressed dump is refused rather than expanded.** A small gzip file can expand without bound, so
+  the refusal names `gzip -d` instead of handing a worker an unbounded amount of work.
+- **A class histogram is refused rather than read.** `jmap -histo` output is the file an operator most
+  often mistakes for a dump; it is a JVM-generated summary with no objects behind it, and the refusal
+  names the command that writes a real dump.
+- **Deleting the repository deletes the bytes**, as above — and this is the case where that matters
+  most.
+
+**The encoding is read from the file, not assumed.** A dump captured with a shell redirect on Windows
+is UTF-16LE with a byte-order mark, and RepoPilot honours the mark and strips it. Decoding such a file
+as UTF-8 does not fail loudly — it interleaves NUL bytes through every line — so without this the
+reader would refuse a valid dump as "not a thread dump", a refusal of evidence caused by the
+operator's terminal rather than by anything in the file. A UTF-16 file *without* a mark is refused as
+unknown rather than guessed at.
+
 **Deleting a repository deletes its artefacts.** The records are removed in a transaction; the bytes
 are removed after it commits, because filesystem work must not run inside a database transaction
 (ADR 0006). A startup sweep then removes any artefact directory whose repository id is not in the
@@ -316,6 +358,10 @@ both immediately.
 - No source leaves the machine unless the operator explicitly enables a cloud provider.
 - A recording never leaves the machine: it is read in process, under content-addressed storage
   that no client-supplied name can influence.
+- A thread dump is read in process too, and only the counts and the JVM's own deadlock verdict are
+  stored: the stack frames stay in the artefact, and thread names appear only where a deadlock
+  cycle named them. A dump captured through a Windows shell (UTF-16 with a byte-order mark) is read
+  rather than refused.
 - Every upload is bounded twice, and a refusal stores nothing and leaves no scratch file.
 - Deleting a repository removes its stored artefacts, not only its records.
 
@@ -340,7 +386,9 @@ both immediately.
   is exactly the kind of false assurance this document exists to avoid.
 - **An uploaded dump is stored, not sandboxed.** A heap dump is process memory in a file. RepoPilot
   does not read the ones it cannot parse, but it does write them to disk under the data directory,
-  where they are protected by the filesystem's own permissions and nothing else.
+  where they are protected by the filesystem's own permissions and nothing else. A thread dump is
+  not process memory — it names threads and frames — but it is still a file on that disk, and it is
+  stored the same way.
 
 ## Reporting a vulnerability
 

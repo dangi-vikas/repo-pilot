@@ -7,7 +7,11 @@ import dev.repopilot.jobs.JobService;
 import dev.repopilot.repository.RepositoryService;
 import dev.repopilot.repository.RepositorySummary;
 import dev.repopilot.runtime.query.RuntimeArtifactView;
+import dev.repopilot.runtime.heapdump.HeapDumpFormat;
+import dev.repopilot.runtime.heapdump.HeapDumpReader;
 import dev.repopilot.runtime.jfr.JfrReader;
+import dev.repopilot.runtime.threaddump.ThreadDumpFormat;
+import dev.repopilot.runtime.threaddump.ThreadDumpReader;
 import dev.repopilot.shared.error.ErrorCode;
 import dev.repopilot.shared.error.RepoPilotException;
 import org.slf4j.Logger;
@@ -37,7 +41,13 @@ import java.util.UUID;
  *   <li><b>The artefact must be plausible before a job is spent on it.</b> A JFR recording
  *       starts with the {@code FLR} header; a gzip stream starts with {@code 1F 8B}. The second
  *       case gets its own message, because "this is a compressed recording, decompress it first"
- *       is the answer that helps, and "not a JFR file" is the answer that wastes an afternoon.</li>
+ *       is the answer that helps, and "not a JFR file" is the answer that wastes an afternoon. A
+ *       thread dump likewise has to be the rich plain-text shape: the thinner
+ *       {@code Thread.dump_to_file} shapes are refused by name, because a dump with no thread
+ *       states in it would produce a report that looks like a healthy JVM. A heap dump has to begin
+ *       with the {@code HPROF} header, and the file that is refused most usefully is the one an
+ *       operator is most likely to have collected by mistake: {@code jmap -histo} output, which is
+ *       a summary the JVM printed rather than a dump of anything.</li>
  *   <li><b>Size is bounded, twice.</b> The outer bound is WebFlux's
  *       {@code spring.webflux.multipart.max-disk-usage-per-part}, enforced while the part is being
  *       written, so an oversized stream stops at a bounded number of bytes on disk instead of at
@@ -243,9 +253,35 @@ public class RuntimeService {
 
     /** A cheap header check, so an obvious mismatch is refused before a job is spent on it. */
     private static void verifyLooksLike(Path file, RuntimeArtifactType type) throws IOException {
-        if (type != RuntimeArtifactType.JFR_RECORDING) {
-            return;
+        switch (type) {
+            case JFR_RECORDING -> verifyRecording(file);
+            case HEAP_DUMP -> verifyHeapDump(file);
+            case THREAD_DUMP -> verifyThreadDump(file);
+            // The remaining type is stored unread: a benchmark result this build cannot import is
+            // still evidence the operator collected, and refusing it would lose it.
+            case BENCHMARK_RESULT -> {
+            }
         }
+    }
+
+    /**
+     * Refuses a heap dump this build cannot read, at upload rather than at analysis.
+     *
+     * <p>The refusal that earns its keep here is the class histogram: {@code jmap -histo} output is
+     * the file an operator is most likely to believe is a heap dump, and it is not one — it has no
+     * object graph behind it, so nothing in it can be checked. A gzipped dump is refused by name too,
+     * with the command that decompresses it, because expanding an untrusted archive inside the
+     * analysis job is work the upload's size limit cannot bound.
+     */
+    private static void verifyHeapDump(Path file) throws IOException {
+        HeapDumpReader.Detection detection = HeapDumpReader.detect(file);
+        if (!detection.format().readable()) {
+            throw RepoPilotException.unsupported(
+                    HeapDumpFormat.explain(detection.format(), detection.head()));
+        }
+    }
+
+    private static void verifyRecording(Path file) throws IOException {
         switch (JfrReader.detectKind(file)) {
             case GZIP -> throw RepoPilotException.unsupported("This is a gzip-compressed file, not a raw JDK "
                     + "Flight Recorder recording. Decompress it first (the JDK writes one when a recording is "
@@ -256,6 +292,23 @@ public class RuntimeService {
             case RECORDING -> {
                 // Nothing to do: it is what it says it is.
             }
+        }
+    }
+
+    /**
+     * Refuses a thread dump this build cannot read, at upload rather than at analysis.
+     *
+     * <p>The two thin {@code Thread.dump_to_file} shapes — plain and JSON — are accepted by the file
+     * picker's extension and rejected here, because they record no thread states and no monitor
+     * ownership: a report derived from one would be a page of zeros that looks exactly like a
+     * healthy JVM. The refusal names the command that produces a readable dump instead, and it
+     * happens before the bytes are stored, so the artefact list never contains a file that cannot be
+     * analysed.
+     */
+    private static void verifyThreadDump(Path file) throws IOException {
+        ThreadDumpFormat format = ThreadDumpReader.detect(file);
+        if (!format.readable()) {
+            throw RepoPilotException.unsupported(ThreadDumpFormat.explain(format));
         }
     }
 

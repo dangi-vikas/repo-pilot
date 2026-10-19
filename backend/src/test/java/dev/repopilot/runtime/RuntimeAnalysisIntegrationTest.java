@@ -189,27 +189,11 @@ class RuntimeAnalysisIntegrationTest {
                 .expectStatus().isEqualTo(HttpStatus.BAD_REQUEST)
                 .expectBody().jsonPath("$.errorCode").isEqualTo("VALIDATION_FAILED");
 
-        // 3. An artefact this build cannot read is still stored, and says so. Refusing the upload
-        // would lose evidence the operator has already collected.
-        RuntimeArtifactView heapDump = upload(repository.id(), "not really a heap dump".getBytes(
-                        StandardCharsets.UTF_8), "sample.hprof", "HEAP_DUMP")
-                .expectStatus().isCreated()
-                .expectBody(RuntimeArtifactView.class)
-                .returnResult()
-                .getResponseBody();
-        assertThat(heapDump).isNotNull();
-        assertThat(heapDump.supported()).isFalse();
-        assertThat(heapDump.unsupportedReason()).isNotBlank();
-        assertThat(heapDump.containsProcessMemory()).isTrue();
-
-        // Asking for its analysis fails immediately, with the reason, rather than queueing a job that
-        // fails a moment later.
-        client.post().uri("/api/v1/repositories/{id}/runtime/artifacts/{artifactId}/analyze",
-                        repository.id(), heapDump.id())
-                .header("Authorization", BEARER)
-                .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue(Map.of())
-                .exchange()
+        // 3. A file uploaded as a heap dump that is not one is refused at upload, naming the shape that
+        // was expected. Heap dumps are read by this build now, so the refusal comes before a job rather
+        // than after it; reading one is covered by HeapDumpAnalysisIntegrationTest.
+        upload(repository.id(), "not really a heap dump".getBytes(StandardCharsets.UTF_8),
+                "sample.hprof", "HEAP_DUMP")
                 .expectStatus().isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY)
                 .expectBody().jsonPath("$.errorCode").isEqualTo("UNSUPPORTED_INPUT");
 

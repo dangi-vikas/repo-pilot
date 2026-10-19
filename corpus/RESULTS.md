@@ -220,13 +220,100 @@ the same recording the smoke test generates on every run.
 
 Re-reading the same file produced the same 101 measurements, and neither run recorded a
 threshold or a severity. The refusal paths were exercised live too: a text file was answered with
-`422 UNSUPPORTED_INPUT` naming the missing `FLR` header, and a JVM heap dump — which RepoPilot
-accepts and stores but cannot read — was refused before any run row was created.
+`422 UNSUPPORTED_INPUT` naming the missing `FLR` header, and a file that is not a recording was
+refused before any run row was created. (That second check ran against a heap dump while this was
+the only reader; heap dumps have their own reader now — see below.)
 
 **What this does not show.** The recording is three seconds of a synthetic JVM. Nothing here is
 a statement about RepoPilot's own latency, throughput or memory, and the 55 ms job figure is a
 single observation on a 297 KB file — it is not a benchmark, and the script above does not
 reproduce it on a schedule.
+
+## Runtime evidence over thread dumps
+
+Taken 2026-10-19, on the same host, against the live backend. Two dumps of real JVMs, read by the
+same reader the Concurrency Inspector uses. They are text snapshots, so there is no window and no
+event count: the quantities are counts of what the JVM printed at one instant.
+
+| Quantity | `td-rich.txt` (`jcmd 9568 Thread.print`) | `td-deadlock.txt` (a two-thread deadlock) |
+| --- | --- | --- |
+| Artefact | 93 690 bytes, stored under its SHA-256 | 9 235 bytes |
+| Encoding | UTF-16LE with a byte-order mark — captured through a PowerShell redirect | UTF-8 |
+| Dump's own timestamp | `2026-10-19 10:04:38` (local time, no zone) | `2026-10-19 10:04:53` |
+| Thread blocks | 60 | 26 |
+| With a Java state | 42 | 13 |
+| The JVM's own threads (no state line) | 18 | 13 |
+| States | 22 `RUNNABLE`, 11 `TIMED_WAITING`, 9 `WAITING`, 0 `BLOCKED` | 9 `RUNNABLE`, 2 `BLOCKED`, 1 `WAITING`, 1 `TIMED_WAITING` |
+| Deadlock cycles reported by the JVM | 0 | 1, involving 2 threads |
+| Contended monitors | 0 | 2 |
+| Deepest stack | 13 frames (`parallel-1`) | 12 frames (`main`) |
+| Most monitors held by one thread | 2 (`reactor-http-nio-1`) | 1 (`Finalizer`) |
+| Measurements produced | 11 | 17 |
+| Metric families | `monitors`, `threads` | `monitors`, `threads` |
+| Reader | `thread-dump-reader=1.0.0`, recorded on the run | same |
+| Analysis job | SUCCEEDED | SUCCEEDED |
+
+The `length=42` on the first dump's `_java_thread_list` line is the JVM's own list length,
+snapshotted before it walked the threads: the file has 60 thread blocks. RepoPilot counts the blocks
+and records the list length only as provenance, because the two numbers are not the same thing.
+
+The refusals were exercised live on the same repository: a `Thread.dump_to_file -format=plain` dump
+and a `-format=json` dump were both answered with `422 UNSUPPORTED_INPUT`, naming the command that
+wrote the file and the command that produces a readable dump. Neither stored anything or created a
+run.
+
+**What this does not show.** A dump is one instant, so nothing here is a trend, a rate or a
+reproduction of a load test. The deadlock in the second file is a deliberate two-thread
+`ReentrantLock` cycle in a scratch JVM, not a production incident. The state counts depend entirely
+on what the JVMs happened to be doing when they were asked: the first dump's zero `BLOCKED` is a fact
+about that instant, not a property of the backend it came from.
+
+## Runtime evidence over heap dumps
+
+Taken 2026-10-19, on the same host, against the live backend. Two HPROF dumps read by the heap-dump
+reader the Memory Analysis screen uses. The first is the one whose numbers can be checked, because its
+JVM held a population that was built to be counted, and a `jcmd GC.class_histogram` of the *same
+process* was taken a second before the dump.
+
+| Quantity | `probe-matched.hprof` (subject, pre-compiled) | `heap-dump.hprof` (this backend) |
+| --- | --- | --- |
+| Artefact | 4 633 297 bytes, stored under its SHA-256 | 187 262 876 bytes (178.6 MB) |
+| Header timestamp | `2026-10-19T08:13:15.280Z` (the format defines it as UTC) | `2026-10-19T08:38:51.386Z` |
+| Objects | 18 501 — 11 081 instances, 7 420 arrays | 1 516 519 — 1 156 815 instances, 359 704 arrays |
+| Recorded bytes | 1 986 030 | 119 225 663 |
+| Types | 352 | 10 585, of which the tables list 20 |
+| Largest type | `byte[]`, 1 147 721 bytes over 4 375 objects | `byte[]`, 62 964 506 bytes over 175 171 objects |
+| Largest single object | 22 208 bytes of `java.lang.Object[]` | 4 194 304 bytes of `byte[]` |
+| GC roots | 819 | 4 418 |
+| Measurements produced | 61 | 61 |
+| Metric families | `arrays`, `classes`, `instances`, `object`, `objects`, `roots`, `types` | same |
+| Reader | `heap-dump-reader=1.0.0`, recorded on the run | same |
+| Analysis job | SUCCEEDED | SUCCEEDED |
+
+The check that matters is the one against the JVM's own histogram, on the same process:
+
+| Type | `jcmd GC.class_histogram` objects | This reader, objects | `-histo` estimate (bytes) | Recorded bytes |
+| --- | ---: | ---: | ---: | ---: |
+| `byte[]` | 4 375 | **4 375** | 1 227 192 | 1 147 721 |
+| `java.lang.String` | 3 172 | **3 172** | 76 128 | 44 408 |
+| `HeapProbe$Node` | 500 | **500** | 12 000 | 10 000 |
+
+The object counts agree exactly. The byte figures do not, and should not: an instance's figure is the
+field values the dump wrote and an array's is its element data, with no object header and no class
+metadata, and the dump writes identifiers at its own declared width (20 bytes recorded for a `Node` the
+JVM sizes at 24). The *totals* do not agree either, for a different reason: the histogram listed
+19 403 objects and the dump holds 18 501, because taking a dump collects first — which is also why
+`GC.heap_dump` has an `-all` flag. Both differences are stated on the rows and under the tables.
+
+The refusals were exercised live on the same repository: a `jmap -histo` class histogram, a gzip stream
+and a thread dump were each answered with `422 UNSUPPORTED_INPUT` before an artefact was stored,
+naming the command that produces a readable file (`GC.heap_dump`, `gzip -d`, `THREAD_DUMP`).
+
+**What this does not show.** Nothing here is a retained size, and the reader computes none: what would
+be freed if a type became unreachable needs a dominator tree over the whole object graph, which this
+build does not construct. A type with a large figure is a type whose objects hold a lot of recorded
+data. There is also only one dump per row, so nothing here is a growth curve, and the two dumps are of
+different processes and are not comparable.
 
 ## What these numbers do not say
 

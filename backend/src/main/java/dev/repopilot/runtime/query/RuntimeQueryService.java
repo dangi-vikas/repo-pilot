@@ -70,10 +70,18 @@ public class RuntimeQueryService {
         this.json = json;
     }
 
-    /** The newest JFR run for a repository, if any recording has been analysed. */
+    /**
+     * The newest runtime-evidence run for a repository, whichever reader produced it.
+     *
+     * <p>"Runtime evidence" is every run type that reads an uploaded artefact — a recording or a
+     * thread dump — and it is asked for as a set rather than by naming one pipeline. Naming one is
+     * how a repository with a freshly analysed thread dump comes to report that nothing has been
+     * recorded.
+     */
     @Transactional(readOnly = true)
     public Optional<AnalysisRun> currentRun(UUID repositoryId) {
-        return runs.findFirstByRepositoryIdAndRunTypeOrderByStartedAtDesc(repositoryId, AnalysisRunType.JFR_ANALYSIS);
+        return runs.findFirstByRepositoryIdAndRunTypeInOrderByStartedAtDesc(repositoryId,
+                AnalysisRunType.runtimeMeasurementTypes());
     }
 
     /** Artefacts uploaded for a repository, newest first. */

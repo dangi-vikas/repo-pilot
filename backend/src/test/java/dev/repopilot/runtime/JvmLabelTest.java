@@ -12,6 +12,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code jdk.JVMInformation.jvmVersion} is the full build string and begins with the VM name, so
  * the obvious implementation prints the name twice, and anchoring on the first parenthesis prints
  * {@code "TM"}.
+ *
+ * <p>It lives on {@link JvmLabels} rather than on one handler because two readers write it — a
+ * recording's provenance and a thread dump's header are the same JVM described two different ways
+ * — and a summary that disagreed with itself depending on which file was uploaded would be a
+ * defect nothing would flag.
  */
 class JvmLabelTest {
 
@@ -24,7 +29,7 @@ class JvmLabelTest {
     @Test
     @DisplayName("does not say the VM name twice when the version already contains it")
     void doesNotRepeatTheName() {
-        assertThat(JfrAnalysisJobHandler.jvmLabel(HOTSPOT, HOTSPOT_VERSION))
+        assertThat(JvmLabels.jvmLabel(HOTSPOT, HOTSPOT_VERSION))
                 .isEqualTo("Java HotSpot(TM) 64-Bit Server VM 21.0.5+9-LTS-239");
     }
 
@@ -33,29 +38,32 @@ class JvmLabelTest {
     void findsTheVersionNotTheTrademark() {
         // With no name to anchor on, the first parenthesised group is "(TM)". The token has to be
         // chosen by shape, not by position.
-        assertThat(JfrAnalysisJobHandler.jvmLabel(null, HOTSPOT_VERSION))
+        assertThat(JvmLabels.jvmLabel(null, HOTSPOT_VERSION))
                 .isEqualTo("21.0.5+9-LTS-239");
-        assertThat(JfrAnalysisJobHandler.jvmLabel("  ", HOTSPOT_VERSION))
+        assertThat(JvmLabels.jvmLabel("  ", HOTSPOT_VERSION))
                 .isEqualTo("21.0.5+9-LTS-239");
     }
 
     @Test
     @DisplayName("falls back to what is present when one field is missing")
     void fallsBackWhenAFieldIsMissing() {
-        assertThat(JfrAnalysisJobHandler.jvmLabel(HOTSPOT, null)).isEqualTo(HOTSPOT);
-        assertThat(JfrAnalysisJobHandler.jvmLabel(HOTSPOT, "  ")).isEqualTo(HOTSPOT);
-        // No parentheses at all: the version is used as it stands rather than mangled.
-        assertThat(JfrAnalysisJobHandler.jvmLabel("OpenJDK 64-Bit Server VM", "25-beta"))
+        assertThat(JvmLabels.jvmLabel(HOTSPOT, null)).isEqualTo(HOTSPOT);
+        assertThat(JvmLabels.jvmLabel(HOTSPOT, "  ")).isEqualTo(HOTSPOT);
+        // No parentheses at all: the version is used as it stands rather than mangled. A thread
+        // dump's header is what produces this shape: the build token is already bare there.
+        assertThat(JvmLabels.jvmLabel("OpenJDK 64-Bit Server VM", "25-beta"))
                 .isEqualTo("OpenJDK 64-Bit Server VM 25-beta");
+        assertThat(JvmLabels.jvmLabel("Java HotSpot(TM) 64-Bit Server VM", "21.0.5+9-LTS-239"))
+                .isEqualTo("Java HotSpot(TM) 64-Bit Server VM 21.0.5+9-LTS-239");
         // A version that does not begin with the name is kept whole alongside it.
-        assertThat(JfrAnalysisJobHandler.jvmLabel("Eclipse OpenJ9 VM", "OpenJ9 (0.43.0) build 21"))
+        assertThat(JvmLabels.jvmLabel("Eclipse OpenJ9 VM", "OpenJ9 (0.43.0) build 21"))
                 .isEqualTo("Eclipse OpenJ9 VM 0.43.0");
     }
 
     @Test
     @DisplayName("says so when the recording names no JVM")
     void saysWhenNothingIsKnown() {
-        assertThat(JfrAnalysisJobHandler.jvmLabel(null, null)).isEqualTo("an unnamed JVM");
-        assertThat(JfrAnalysisJobHandler.jvmLabel("  ", "  ")).isEqualTo("an unnamed JVM");
+        assertThat(JvmLabels.jvmLabel(null, null)).isEqualTo("an unnamed JVM");
+        assertThat(JvmLabels.jvmLabel("  ", "  ")).isEqualTo("an unnamed JVM");
     }
 }
