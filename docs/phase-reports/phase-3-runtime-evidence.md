@@ -26,13 +26,16 @@ verdicts, and most of the code below exists to keep that boundary from eroding.
 | Reproducibility | Working | Re-analysing the same recording produced the same measurement count; the smoke test asserts it |
 | Content-addressed, traversal-proof storage | Working | An upload named `../../escape.jfr` is stored under its hash and listed as `smoke-recording.jfr`; `ArtifactStoreTest.refusesToEscape` covers the lexical and the `toRealPath` check |
 | Streaming upload, bounded memory | Working | The multipart part is written to a scratch file, hashed on a second pass and moved with `ATOMIC_MOVE`; peak memory is one hash buffer |
+| Bounded ingest, twice | Working | The framework's per-part disk cap stops an oversized stream while it is arriving; `repopilot.analysis.max-artifact-size-bytes` is checked on the landed file and names the size and the limit in its refusal. Both are `413 LIMIT_EXCEEDED`, and neither leaves a scratch file behind — asserted in `RuntimeUploadLimitIntegrationTest` with the limits configured down to 4 KiB and 64 KiB, because a 1 GiB default cannot be probed with a fixture |
 | Unsupported artefact types | Working | A heap dump uploads, is stored, is reported `supported=false` with a named reason, and is flagged `containsProcessMemory=true` |
+| Deleting a repository removes its bytes | Working | The rows go in a transaction, the bytes after it commits, and a startup sweep removes any artefact directory whose repository is not in the database. Asserted over HTTP and on disk by the smoke test |
 | Performance Lab UI | Working | `/performance` reads the run header, provenance, measurements with filters by family and kind, and the artefacts; screenshots in `docs/screenshots/` |
 | Durable job, none of the run work in a transaction | Working | `JFR_ANALYSIS` is queued, claimed, run and completed through the same dispatcher as indexing and static analysis |
 
-**Verification.** Backend `.\mvnw.cmd -B package` — **68 tests, 0 failures, BUILD SUCCESS**.
-Frontend `npm run build` — typecheck clean, 115 modules, 316.44 kB JS (95.50 kB gzip).
-`scripts/smoke-test.ps1` against the live server — **124 checks, 0 failures** (61 at Phase 2).
+**Verification.** Backend `.\mvnw.cmd -B package` — **73 tests, 0 failures, BUILD SUCCESS**.
+Frontend `npm run build` — typecheck clean, 115 modules, 317.52 kB JS (95.95 kB gzip).
+`scripts/smoke-test.ps1` against the live server — **130 checks, 0 failures** (61 at Phase 2, 124
+before the artefact-store checks in this increment).
 
 ---
 
@@ -46,11 +49,11 @@ Frontend `npm run build` — typecheck clean, 115 modules, 316.44 kB JS (95.50 k
 | `jfr/JfrMeasurementMapper.java` | 377 | Pure function from a report to `MeasurementDraft`s. Every honesty caveat lives here |
 | `jfr/JfrRecordingReport.java` | 155 | The parsed shape: activity statistics, gauges, histograms, exceptions, allocation, provenance |
 | `JfrAnalysisJobHandler.java` | 359 | The job: run creation, measurement persistence, summary, provenance JSON, failure semantics |
-| `ArtifactStore.java` | 157 | Content-addressed storage: `stage`, `adopt`, `resolve`, containment re-check, scratch cleanup |
-| `RuntimeService.java` | 236 | Ingestion: type resolution, filename sanitising, size limit, analysis submission |
+| `ArtifactStore.java` | 240 | Content-addressed storage: `stage`, `adopt`, `resolve`, containment re-check, scratch cleanup, repository-wide discard, store inventory |
+| `RuntimeService.java` | 284 | Ingestion: type resolution, filename sanitising, the configured size limit, scratch reclamation, analysis submission |
 | `RuntimeArtifact.java`, `RuntimeMeasurement.java` | 121, 128 | Entities; measurement column mapped as `metric_value` (`VALUE` is a reserved word) |
 | `query/RuntimeQueryService.java` + views | 205 + 161 | The read path: summary, measurements with filters, paged |
-| `api/v1/RuntimeController.java` | 157 | `POST/GET …/runtime/artifacts`, `…/{id}`, `…/{id}/analyze`, `…/measurements`, `…/summary` |
+| `api/v1/RuntimeController.java` | 165 | `POST/GET …/runtime/artifacts`, `…/{id}`, `…/{id}/analyze`, `…/measurements`, `…/summary` |
 
 **Database — `V4__runtime_measurement.sql`**: `runtime_measurement`
 (`metric_key`, `metric_kind`, `aggregation`, `metric_value`, `unit`, `sample_count`, `scope`,
@@ -63,10 +66,13 @@ measurement formatting in `lib/format.ts` (`formatMetricValue`, `aggregationLabe
 calls in `lib/api.ts`, and five hooks in `hooks/queries.ts`. The `performance` destination is now
 `available: true` and the placeholder plan was removed.
 
-**Tests — 5 classes, ~1 366 lines**: `JfrMeasurementMapperTest` (13), `RuntimeAnalysisIntegrationTest`
-(2, end to end through the real dispatcher), `ArtifactStoreTest` (3), `JvmLabelTest` (4),
-`JfrReaderTest` (2). The reader tests generate their own recording rather than checking a binary
-fixture in, so the assertions cannot drift away from the JDK in use.
+**Tests — 6 classes, ~1 640 lines**: `JfrMeasurementMapperTest` (13), `RuntimeAnalysisIntegrationTest`
+(2, end to end through the real dispatcher), `RuntimeUploadLimitIntegrationTest` (5: the configured
+limit is the enforced one, the boundary is inclusive, one byte over is refused by name, a stream past
+the framework cap is refused without storing anything, and the startup sweep removes exactly the
+orphans), `ArtifactStoreTest` (3), `JvmLabelTest` (4), `JfrReaderTest` (2). The reader tests generate
+their own recording rather than checking a binary fixture in, so the assertions cannot drift away
+from the JDK in use.
 
 ---
 
@@ -133,7 +139,35 @@ have stated.
 4. **`$uri?artifactType=` is a PowerShell variable.** The smoke test's first run died on
    `$uri?artifactType` being parsed as a variable name; fixed with `${uri}`. The script also needed
    `Add-Type -AssemblyName System.Net.Http`, and PowerShell 5.1 silently drains the error response
-   stream, so refusal bodies are read from `$_.ErrorDetails.Message` instead.
+   stream, so refusal bodies were read from `$_.ErrorDetails.Message`.
+5. **A documented limit that did nothing.** `repopilot.analysis.max-artifact-size-bytes` is bound
+   and documented, and `RuntimeService` ignored it in favour of a hard-coded 2 GiB. The two numbers
+   disagreed, so an operator raising the configured value would have watched nothing change and
+   concluded the check was broken. The service now applies the configured value and exposes it as
+   `maxArtifactBytes()`, and `RuntimeUploadLimitIntegrationTest` asserts that the number it reports
+   is the number it enforces. Found by asking what else the security document claims, rather than by
+   reading the code for bugs.
+6. **A scratch file leaked on every failed upload.** `stage` reserves a scratch file before any byte
+   arrives, and the upload pipeline had no path that reclaimed it: a client that disconnected, or a
+   framework that aborted the part, left a file behind for good. Fixed with `RuntimeService.discard`
+   on the error path, and asserted by checking the scratch directory after both refusals.
+7. **A framework limit surfaced as a 500.** Exceeding `max-disk-usage-per-part` threw
+   `DataBufferLimitException`, which the global handler mapped to `INTERNAL_ERROR` — the client was
+   told the server was broken when it had simply sent too much. Mapped to `413 LIMIT_EXCEEDED` with
+   the setting named, and the check that caught it is the one that uploads past a deliberately tiny
+   cap.
+8. **The measurements table hid its own value column.** An auto-layout table takes each column's
+   minimum width from its longest unbreakable cell, so a scope such as
+   `java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject` widened the six-column
+   table past the panel and pushed `Value`, `Reduction` and `Samples` off the right edge. A
+   `max-width` on the `<td>` did nothing, because a table cell's `overflow` is not honoured; the
+   clipping has to happen in a block element inside the cell. Fixed with fixed column proportions
+   plus a truncating cell for the scope, and confirmed by measuring the rendered table against its
+   panel rather than by looking at a screenshot and hoping.
+9. **`$_.Exception.Response` is not always there.** The smoke test's newly added 404 check threw
+   `PropertyNotFoundException` under `Set-StrictMode` because PowerShell 5.1's error record for a
+   non-2xx response does not always carry a `Response`. The refusal helpers now use `HttpClient`
+   directly and depend on no PowerShell error shape at all.
 
 ---
 
@@ -145,9 +179,18 @@ have stated.
   cases (text, gzip, empty) without touching the API. A structurally plausible but corrupt recording
   still reaches the JDK; that is recorded as a limitation rather than papered over with a
   `System.gc()` in production code. Established by `Probe10` in the probe corpus.
-- **Peak disk during upload is about twice the artefact size**, transiently: the part lands in a
-  scratch file and is copied to its content-addressed home. Peak *memory* is one hash buffer.
-  The limit is 2 GiB per artefact.
+- **Peak disk during an upload is about twice the artefact size**, transiently: the multipart part
+  lands in a scratch file, is hashed on a second pass, and is moved into place. Peak *memory* is one
+  hash buffer regardless of file size. Size is bounded in two places — the framework's per-part disk
+  cap (2 GiB by default, `REPOPILOT_MAX_PART_DISK_BYTES`) while the part is arriving, and
+  `repopilot.analysis.max-artifact-size-bytes` (1 GiB) on the landed file — and the two are meant to
+  be raised together. A file between them is read and then refused by name; a file past both is cut
+  off mid-stream.
+- **Artefacts are never pruned by age.** `repopilot.storage.retention-days` is bound and unused, and
+  the `ARTIFACT_RETENTION` job type has no handler, so a recording stays on disk until its repository
+  is deleted or the file is removed by hand. Deleting a repository does remove its bytes, and the
+  startup sweep removes orphans; neither is a retention policy. This is stated in `docs/security.md`
+  as a gap rather than as a setting.
 - **No streamed event timeline.** The reader aggregates; it does not retain per-event rows, so
   "what happened at t=1.2 s" is not answerable. That is a different feature with a different cost.
 - **Only `JFR_RECORDING` is readable.** Heap dumps, thread dumps and benchmark results are stored
@@ -165,17 +208,22 @@ have stated.
 ## 6. Files added or changed
 
 **Added (backend):** `runtime/` — 19 main classes as listed in §2, plus
-`api/v1/RuntimeController.java`, `db/migration/V4__runtime_measurement.sql`, and 5 test classes.
-**Changed (backend):** `analysis/AnalysisRun.java` (artefact columns, `measurement_count`, a
-second `complete(...)` overload), `jobs/JobContext.java` (`parametersJson()`),
-`jobs/JobDispatcher.java`, `resources/application.yml` (multipart limits, streamed to disk).
+`api/v1/RuntimeController.java`, `db/migration/V4__runtime_measurement.sql`, and 6 test classes
+including `RuntimeUploadLimitIntegrationTest`.
+**Changed (backend):** `analysis/AnalysisRun.java` (artefact columns, `measurement_count`, a second
+`complete(...)` overload), `jobs/JobContext.java` (`parametersJson()`), `jobs/JobDispatcher.java`,
+`config/StartupTasks.java` (the artefact orphan sweep), `api/v1/RepositoryController.java` (discard a
+repository's bytes after its rows), `api/GlobalExceptionHandler.java` (map the framework's buffer
+limit to `413`), `resources/application.yml` (multipart streamed to disk, bounded per part).
 **Added (frontend):** `pages/PerformanceLabPage.tsx`.
 **Changed (frontend):** `lib/types.ts`, `lib/api.ts`, `lib/format.ts`, `hooks/queries.ts`,
-`components/AppShell.tsx`, `components/destinations.ts`, `pages/CapabilityPage.tsx`.
-**Added (docs):** `docs/adr/0008-runtime-evidence.md`, this report,
-`docs/screenshots/performance-lab-*.png`.
+`components/AppShell.tsx`, `components/destinations.ts`, `pages/CapabilityPage.tsx`,
+`styles/app.css` (`table.data.data-fixed`).
+**Added (docs):** `docs/adr/0008-runtime-evidence.md`, this report, and three screenshots —
+`performance-lab-upload.png`, `performance-lab-run.png`, `performance-lab-measurements.png`.
 **Changed (docs):** `README.md`, `docs/architecture.md`, `docs/security.md`, `corpus/RESULTS.md`.
-**Changed (scripts):** `scripts/smoke-test.ps1` — 63 new checks.
+**Changed (scripts):** `scripts/smoke-test.ps1` — 69 new checks over Phase 2, including six that
+inspect the artefact store on disk when `-DataDir` (or `REPOPILOT_DATA_DIR`) is supplied.
 
 ---
 

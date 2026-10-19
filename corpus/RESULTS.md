@@ -197,6 +197,37 @@ indexing volume, so one rule accounts for every finding. Rule-variety evidence c
 every built-in rule firing exactly once, one clean file with nothing, and a fake credential
 whose value appears in no finding.
 
+## Runtime evidence over a local recording
+
+Recorded 2026-10-18, on the same host, against the live backend. This is a different kind of
+measurement from the ones above: the numbers below are what RepoPilot *read out of* a recording,
+not what RepoPilot itself cost. The recording is of a short-lived JVM that allocates, sleeps and
+forces a collection — it exists to exercise the reader, not to profile anything real, and it is
+the same recording the smoke test generates on every run.
+
+| Quantity | Value |
+| --- | --- |
+| Artefact | 303 679 bytes (297 KB), stored under its SHA-256 |
+| Recording window | 3.3 s |
+| Events read | 5 572 across 183 event types |
+| Measurements produced | 101 (57 counter, 23 gauge, 17 duration, 4 size) |
+| Metric families | 15 (`allocation`, `cpu`, `errors`, `eventTypes`, `events`, `exceptions`, `execution`, `file`, `gc`, `heap`, `park`, `recording`, `safepoint`, `sleep`, `throwables`) |
+| Execution samples | 148 (17 of them in native code) |
+| Allocation samples | 132 |
+| GC pauses | 29, totalling 78 ms |
+| Reader | `JFR-READER=1.0.0`, recorded on the run |
+| Analysis job | 55 ms (reading the file, mapping and persisting 101 rows) |
+
+Re-reading the same file produced the same 101 measurements, and neither run recorded a
+threshold or a severity. The refusal paths were exercised live too: a text file was answered with
+`422 UNSUPPORTED_INPUT` naming the missing `FLR` header, and a JVM heap dump — which RepoPilot
+accepts and stores but cannot read — was refused before any run row was created.
+
+**What this does not show.** The recording is three seconds of a synthetic JVM. Nothing here is
+a statement about RepoPilot's own latency, throughput or memory, and the 55 ms job figure is a
+single observation on a 297 KB file — it is not a benchmark, and the script above does not
+reproduce it on a schedule.
+
 ## What these numbers do not say
 
 - **They are not PostgreSQL numbers.** The recorded runs used H2 in

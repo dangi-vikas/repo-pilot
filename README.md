@@ -381,6 +381,15 @@ posture is documented in [docs/security.md](docs/security.md); the rules that ma
   by the filename the client sent. Header validation happens before any JDK object is created,
   and the file is read only by `jdk.jfr`. Heap and thread dumps contain process memory, so the
   UI says so when you select one.
+- **Deleting a repository deletes its bytes.** The records go in a transaction, the files go
+  after it commits, and a startup sweep removes any artefact directory whose repository is no
+  longer in the database. A heap dump is process memory, so "deleted" means deleted rather than
+  "no longer listed".
+- **Uploads are bounded twice.** `spring.webflux.multipart.max-disk-usage-per-part` (2 GiB,
+  `REPOPILOT_MAX_PART_DISK_BYTES`) stops an oversized stream while it is still arriving;
+  `repopilot.analysis.max-artifact-size-bytes` (1 GiB) is the published limit, checked on the
+  landed file so the refusal can name the exact size and the exact limit. Both answer
+  `413 LIMIT_EXCEEDED`, and neither leaves a scratch file behind. Raise them together.
 - **Nothing is sent anywhere by default.** The default provider is a local Ollama instance.
   The optional OpenAI-compatible provider is disabled unless a key is explicitly supplied.
   A recording never leaves the machine: the reader runs in process.
@@ -481,7 +490,14 @@ Stated plainly, because a tool that hides these cannot be trusted with the other
   and records the residual behaviour rather than calling `System.gc()` in production code.
 - **Peak disk during an upload is about twice the artefact size**, transiently: the multipart
   part lands in a scratch file, is hashed on a second pass, and is moved into place. Peak
-  memory is one hash buffer regardless of file size. The limit is 2 GiB per artefact.
+  memory is one hash buffer regardless of file size. Size is bounded in two places — the
+  framework's per-part disk cap (2 GiB, `REPOPILOT_MAX_PART_DISK_BYTES`) while the part is
+  arriving, and `repopilot.analysis.max-artifact-size-bytes` (1 GiB) on the landed file — and
+  the two are meant to be raised together.
+- **Artefacts are never pruned by age.** `repopilot.storage.retention-days` is bound and unused,
+  and the `ARTIFACT_RETENTION` job type has no handler, so a recording stays on disk until its
+  repository is deleted or the file is removed by hand. Deleting a repository does remove its
+  bytes, and startup removes orphans; neither is a retention policy.
 - **The benchmark corpus says nothing about rule quality.** It was generated for indexing
   volume and triggers exactly one PMD rule 600 times. The rule-variety evidence is the
   fixture, which is small and hand-written.

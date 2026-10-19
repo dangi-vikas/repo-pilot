@@ -111,6 +111,17 @@ artefact that produced them, and RepoPilot applies no thresholds to them.**
   in the test.
 - Adding a threshold policy later (a `repopilot.policy.*` file, say) does not change this
   schema: it adds a derivation on top of measurements that remain unopinionated.
+- **Ingest is bounded, twice, and a refusal leaves nothing behind.** The framework's per-part disk
+  cap (`spring.webflux.multipart.max-disk-usage-per-part`, 2 GiB by default) bounds what a stream can
+  write while it is still arriving; `repopilot.analysis.max-artifact-size-bytes` (1 GiB) is the
+  published limit, checked on the landed file so the refusal can name the exact size and the exact
+  limit. Both answer `413 LIMIT_EXCEEDED`, and both delete the scratch file. Two numbers because they
+  do two jobs: only the framework can stop a stream early, and only RepoPilot can explain itself.
+- **A deleted repository takes its bytes with it.** Removing the rows and leaving a heap dump — which
+  is process memory — on disk would make "deleted" a claim about the database rather than about the
+  machine. The filesystem work runs after the transaction commits (ADR 0006), and a startup sweep
+  removes artefact directories whose repository is not in the database, which covers a deletion
+  interrupted between the two.
 - **Known platform limitation.** The JDK's `RecordingFile` keeps its channel open when it fails
   to parse a file, and there is no way to close it from outside; the file stays locked until the
   next collection releases it. `JfrReader.detectKind` checks the file header before any

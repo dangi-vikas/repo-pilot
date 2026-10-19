@@ -362,7 +362,11 @@ Five properties of this flow are load-bearing:
 POST /repositories/{id}/runtime/artifacts          ← multipart, streamed to a scratch file
   │  1. resolve the artefact type, or infer it from the extension
   │  2. stream the part to <data-dir>/tmp, hashing as it goes
-  │  3. refuse a file without the JFR header ('FLR'), by name, before any JDK object exists
+  │     (bounded above by spring.webflux.multipart.max-disk-usage-per-part, which stops an
+  │      oversized stream while it is still arriving; a failure here deletes the scratch file)
+  │  3. check the landed size against repopilot.analysis.max-artifact-size-bytes → 413 with the
+  │     exact size and the exact limit; refuse a file without the JFR header ('FLR'), by name,
+  │     before any JDK object exists
   │  4. atomically move it to <data-dir>/artifacts/<repoId>/<hash[0..2]>/<sha256>.<ext>
   │     (identical bytes already stored → the first artefact is returned, nothing is written)
   ▼
@@ -402,6 +406,13 @@ Four properties of this flow are load-bearing:
    environment variables are in the file and are not read; per-event settings are not attributed
    because JDK 21's `ActiveSetting` cannot say which event type a setting configured. A guessed
    sampling period would make every count derived from it wrong.
+5. **The bytes are owned by the repository that uploaded them, and a refusal leaves nothing.**
+   A stored artefact is reachable only through its content-addressed path, and deleting a
+   repository removes its directory after the rows are gone — filesystem work outside the
+   transaction, per [ADR 0006](adr/0006-transaction-boundaries.md). A startup sweep then removes
+   any artefact directory whose repository is not in the database, so a deletion interrupted
+   between the two steps is still completed. Neither path is a retention policy: nothing prunes
+   by age, and the documentation says so.
 
 ---
 
@@ -493,13 +504,13 @@ What has actually been run against this snapshot, and what has not:
 
 | Area | Status |
 | --- | --- |
-| Backend test suite | 68 tests, all passing (JUnit 5, H2 for the `local` profile, real Spring contexts) |
-| Frontend | `tsc --noEmit` clean under strict settings; production build succeeds (115 modules, 316.44 kB JS / 95.50 kB gzip) |
+| Backend test suite | 73 tests, all passing (JUnit 5, H2 for the `local` profile, real Spring contexts) |
+| Frontend | `tsc --noEmit` clean under strict settings; production build succeeds (115 modules, 317.52 kB JS / 95.95 kB gzip) |
 | Live end-to-end | Indexing, Code Explorer (including findings), Dependency Graph, Performance Lab, Analysis History, Settings and the command palette exercised against a running backend on Windows |
-| Smoke test | 124 checks against a live server, 0 failures (readiness, registration, indexing, code intelligence, static analysis, the finding evidence contract, and runtime evidence including its refusals) |
+| Smoke test | 130 checks against a live server, 0 failures (readiness, registration, indexing, code intelligence, static analysis, the finding evidence contract, runtime evidence including its refusals, and — when the data directory is known — six checks that inspect the artefact store on disk) |
 | Benchmark corpus | 3 002 Java files indexed (16 205 symbols, 105 001 references) and analysed in 118 s for 600 findings; spans recorded in [`corpus/RESULTS.md`](../corpus/RESULTS.md) |
 | Static analysis | **Verified.** Built-in rules and PMD run as a durable job; every stored finding passed its citation check; filters, tallies, run scoping and append-only re-runs asserted in the smoke test and the integration test |
-| Runtime evidence (JFR) | **Verified.** A live recording was uploaded, stored by hash, read by a durable job and queried back: 101 measurements with units, kinds, reductions and provenance. Refusals (bad header, unreadable type, pathological filename), deduplication and reproducibility are asserted in the smoke test (63 new checks) and `RuntimeAnalysisIntegrationTest` |
+| Runtime evidence (JFR) | **Verified.** A live recording was uploaded, stored by hash, read by a durable job and queried back: 101 measurements with units, kinds, reductions and provenance. Refusals (bad header, unreadable type, pathological filename, both upload limits), deduplication, reproducibility and the removal of a deleted repository's bytes are asserted in the smoke test (69 new checks) and `RuntimeAnalysisIntegrationTest` / `RuntimeUploadLimitIntegrationTest` |
 | SpotBugs | **Not implemented.** Needs bytecode; `compiledClassesPresent` is recorded per revision so it will report *not applicable* rather than a pass |
 | Heap/thread-dump analysis, benchmark import, AI investigation | **Not implemented.** Job types are declared; submitting one returns `UNSUPPORTED_INPUT`. Heap and thread dumps are accepted and stored, then refused by name |
 | PostgreSQL | **Not verified.** Migrations are written to be portable and are exercised on H2 in PostgreSQL-compatibility mode only |

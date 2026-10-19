@@ -383,9 +383,7 @@ Assert-That ($firstRunStillThere.totalItems -eq $fixtureSummary.total) `
 Write-Host "`n== runtime evidence (JFR) ==" -ForegroundColor Cyan
 
 # The multipart upload below uses System.Net.Http rather than curl.exe, so the script's only
-# dependency stays the .NET framework that ships with PowerShell — but the assembly is not
-# loaded by default in a fresh session.
-Add-Type -AssemblyName System.Net.Http
+# dependency stays the .NET framework that ships with PowerShell (loaded at the top of the file).
 
 <#
 Uploads a file as a multipart part and returns the status and body whatever the status is.
@@ -420,12 +418,12 @@ function Send-Artifact([string] $repository, [string] $path, [string] $filename,
 
 <# Posts a request whose rejection is the assertion, and returns its status and body. #>
 function Post-ExpectingFailure([string] $uri, [string] $body) {
-    return Invoke-ExpectingFailure -Method Post -Uri $uri -Body $body
+    return Invoke-ExpectingFailure -Method "POST" -Uri $uri -Body $body
 }
 
 <# Reads a request whose rejection is the assertion, and returns its status and body. #>
 function Get-ExpectingFailure([string] $uri) {
-    return Invoke-ExpectingFailure -Method Get -Uri $uri
+    return Invoke-ExpectingFailure -Method "GET" -Uri $uri
 }
 
 <# Deletes a repository. 204 on success, so there is no body to read. #>
@@ -435,31 +433,32 @@ function Remove-Repository([string] $repositoryId) {
 }
 
 <#
-Invoke-WebRequest throws on a non-2xx response, which is exactly what these callers want to
-observe rather than propagate. The error body is read the awkward way because PowerShell 5.1
-drains the response stream before the exception surfaces.
+Sends a request and returns its status and body whatever that status is.
+
+Invoke-RestMethod is used everywhere else in this script because the happy path is the point
+there; here the refusal is the assertion, so the response has to be read rather than thrown.
+
+HttpClient rather than Invoke-WebRequest with a try/catch: PowerShell 5.1's error record for a
+non-2xx response varies with the release, and reaching for `$_.Exception.Response` throws under
+Set-StrictMode when the property is absent — which is how this helper failed the first time it
+was asked for a 404.
 #>
 function Invoke-ExpectingFailure {
     param([string] $Method, [string] $Uri, [string] $Body)
+    $client = New-Object System.Net.Http.HttpClient
+    $client.DefaultRequestHeaders.Authorization =
+        (New-Object System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", $Token))
+    $request = New-Object System.Net.Http.HttpRequestMessage(([System.Net.Http.HttpMethod]::new($Method)), $Uri)
+    if (-not [string]::IsNullOrWhiteSpace($Body)) {
+        $request.Content = New-Object System.Net.Http.StringContent(
+            $Body, [System.Text.Encoding]::UTF8, "application/json")
+    }
     try {
-        $response = Invoke-WebRequest -Uri $Uri -Headers $jsonHeaders -Method $Method `
-            -Body $Body -UseBasicParsing
-        return @{ Status = $response.StatusCode; Body = $response.Content }
-    } catch {
-        # $_.ErrorDetails.Message is where PowerShell 5.1 puts the error body; the response stream
-        # is already drained by the time the exception surfaces, and reading it yields nothing.
-        $details = $_.ErrorDetails
-        if ($null -ne $details -and -not [string]::IsNullOrWhiteSpace($details.Message)) {
-            return @{ Status = [int]$_.Exception.Response.StatusCode; Body = $details.Message }
-        }
-        $webResponse = $_.Exception.Response
-        if ($null -eq $webResponse) { throw }
-        $reader = New-Object System.IO.StreamReader($webResponse.GetResponseStream())
-        try {
-            return @{ Status = [int]$webResponse.StatusCode; Body = $reader.ReadToEnd() }
-        } finally {
-            $reader.Dispose()
-        }
+        $response = $client.SendAsync($request).Result
+        return @{ Status = [int]$response.StatusCode; Body = $response.Content.ReadAsStringAsync().Result }
+    } finally {
+        $request.Dispose()
+        $client.Dispose()
     }
 }
 
