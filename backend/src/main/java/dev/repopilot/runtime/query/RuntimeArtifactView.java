@@ -13,6 +13,13 @@ import java.util.UUID;
  * someone uploads a heap dump this build cannot parse, the useful answer is "stored, not
  * analysed, because heap dump analysis is not implemented" — not a success that quietly
  * produced nothing, and not a refusal that throws away a file the operator may need.
+ *
+ * <p>{@code purgedAt} is the other answer the client must be able to tell apart from an upload that
+ * never happened. An artefact whose file retention removed is still an artefact: it has a name, a size,
+ * a hash and every measurement its run produced. What it no longer has is bytes, so
+ * {@link #purgedAt()} says when they went and {@code sizeBytes} stays the size of the file as received.
+ * A client that showed a purged artefact as if it were readable would be inviting an analysis that
+ * cannot run; one that hid it would be throwing away the only record of the evidence.
  */
 public record RuntimeArtifactView(UUID id,
                                   UUID repositoryId,
@@ -25,7 +32,8 @@ public record RuntimeArtifactView(UUID id,
                                   boolean supported,
                                   String unsupportedReason,
                                   boolean containsProcessMemory,
-                                  long measurementCount) {
+                                  long measurementCount,
+                                  Instant purgedAt) {
 
     public static RuntimeArtifactView from(RuntimeArtifact artifact, long measurementCount) {
         return new RuntimeArtifactView(
@@ -40,6 +48,12 @@ public record RuntimeArtifactView(UUID id,
                 artifact.getArtifactType().supported(),
                 artifact.getArtifactType().unsupportedReason(),
                 artifact.getArtifactType().containsProcessMemory(),
-                measurementCount);
+                measurementCount,
+                artifact.getPurgedAt());
+    }
+
+    /** Whether the stored file is gone, leaving the record and its measurements. */
+    public boolean purged() {
+        return purgedAt != null;
     }
 }

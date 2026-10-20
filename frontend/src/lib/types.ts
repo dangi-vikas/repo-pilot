@@ -358,9 +358,9 @@ export interface FindingSummaryView {
 /**
  * What kind of file a runtime artefact is.
  *
- * `JFR_RECORDING` and `THREAD_DUMP` can be read by this build. The others are accepted, stored and
- * reported as unsupported with a reason, because throwing away evidence an operator already
- * collected is worse than admitting the reader is not written yet.
+ * All four can be read by this build, each by a reader that only repeats what the file states.
+ * `supported` and `unsupportedReason` stay on the artefact because they are how the API answers for a
+ * format a build does not read — the shape of the refusal, not a promise that one exists today.
  */
 export type RuntimeArtifactType =
   | "JFR_RECORDING"
@@ -379,10 +379,14 @@ export type MetricKind = "COUNTER" | "DURATION" | "GAUGE" | "SIZE";
 /**
  * How the samples behind one value were reduced.
  *
- * There is deliberately no percentile here. A p99 cannot be derived from a stored max,
- * so the backend does not pretend to have one, and neither does this type.
+ * `AS_REPORTED` is the odd one out and is not a reduction: it means the number was computed by
+ * something else — a profiler's own aggregation, or the harness that ran a benchmark — and RepoPilot
+ * is repeating it rather than deriving it. There is deliberately no percentile here. A p99 cannot be
+ * derived from a stored max, so the backend does not pretend to have one, and neither does this type.
+ * A percentile a benchmark file states is stored as a quoted `AS_REPORTED` row, under the harness's
+ * own level.
  */
-export type MeasurementAggregation = "COUNT" | "SUM" | "MEAN" | "MAX";
+export type MeasurementAggregation = "COUNT" | "SUM" | "MEAN" | "MAX" | "AS_REPORTED";
 
 /** An uploaded runtime artefact, whether or not it can be read yet. */
 export interface RuntimeArtifactView {
@@ -404,6 +408,53 @@ export interface RuntimeArtifactView {
    * and the warning shown for one would be false for the other.
    */
   containsProcessMemory: boolean;
+  measurementCount: number;
+  /**
+   * When the stored bytes were removed by retention, or absent while the file is there.
+   *
+   * Only the file goes: the artefact row, the run and every measurement stay, which is why a purged
+   * artefact still shows its numbers and still refuses to be analysed again. Uploading the same bytes
+   * clears this.
+   */
+  purgedAt?: Instant | null;
+}
+
+/**
+ * What a retention pass would remove, computed against the clock on every read.
+ *
+ * There is no dry-run job because the plan is the dry run: `candidates` is what a purge would delete
+ * right now, and `measurementsKept` is the number it would not.
+ */
+export interface RetentionPlan {
+  repositoryId: Uuid;
+  /** The window the plan was computed for, in days. Zero means pruning is switched off. */
+  retentionDays: number;
+  automatic: boolean;
+  cutoff: Instant;
+  /** Files still on disk inside the window. */
+  storedArtefacts: number;
+  storedBytes: number;
+  /** Files whose bytes were already removed. Their rows and measurements are still here. */
+  purgedArtefacts: number;
+  purgedBytes: number;
+  /** The oldest file still on disk, which is what "nothing is due yet" is measured against. */
+  oldestStoredAt?: Instant | null;
+  candidates: RetentionCandidate[];
+  /** Bytes a purge would reclaim now: the sum over `candidates`. */
+  removableBytes: number;
+  /** Measurements that would survive the purge, because they are not the bytes. */
+  measurementsKept: number;
+}
+
+/** One file a purge would remove, and what would survive it. */
+export interface RetentionCandidate {
+  artifactId: Uuid;
+  originalFilename: string;
+  artifactType: RuntimeArtifactType;
+  sizeBytes: number;
+  createdAt: Instant;
+  analysisRunId?: Uuid | null;
+  /** Measurements recorded from this file, which purging does not touch. */
   measurementCount: number;
 }
 
@@ -495,6 +546,10 @@ export interface RuntimeProvenance {
     /** Why `identifierSize` is not the width of a reference: a 64-bit dump with compressed
      * references still writes 8-byte identifiers. The reader's own explanation. */
     identifierSizeBasis?: string | null;
+    /** The JMH version that wrote a benchmark result. */
+    jmhVersion?: string | null;
+    /** The JDK the benchmark ran on, as its result file states it. */
+    jdkVersion?: string | null;
   };
   recording?: {
     name?: string | null;
@@ -565,6 +620,30 @@ export interface RuntimeProvenance {
     thresholdsApplied?: boolean | null;
     /** False for a heap dump, and stated: no dominator tree is built, so no size is retained. */
     retainedSizesComputed?: boolean | null;
+    /**
+     * False for a benchmark result: one file states one run, there is no baseline in the repository,
+     * and RepoPilot does not compare two numbers it did not measure under the same conditions.
+     */
+    comparisonsMade?: boolean | null;
+  };
+  /**
+   * A benchmark result's own facts.
+   *
+   * The JVM's command line is counted, never carried: a `-D` argument is a credential carrier, which
+   * is the same rule the JFR reader applies. `jvmArgumentsBasis` is the reader saying so.
+   */
+  benchmark?: {
+    entries?: number | null;
+    /** True when the file held more entries than the reader stores, so the rows are a prefix. */
+    truncated?: boolean | null;
+    jvmArgumentsRecorded?: number | null;
+    jvmArgumentsBasis?: string | null;
+    modes?: string[] | null;
+    parameters?: string[] | null;
+    entriesWithoutIterations?: number | null;
+    entriesWithoutErrorEstimate?: number | null;
+    warmupTimes?: string[] | null;
+    measurementTimes?: string[] | null;
   };
   /** The reader's own prose about what these numbers do and do not mean. */
   note?: string | null;

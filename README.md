@@ -36,7 +36,13 @@ against indexed evidence by the backend before you see it.
 | [Memory Analysis — types by bytes](docs/screenshots/memory-types-bytes.png) | The largest types by recorded bytes, with shares, and the disclosure underneath: `20 of 827 type(s) shown` |
 | [Memory Analysis — what it is not](docs/screenshots/memory-roots.png) | The GC roots by kind (1,342 roots: `sticky-class`, `jni-global`, `java-frame`, `thread-object`) and the footer: the census is of the objects the process was *still holding* — taking a dump collects first — with no retained size, no rate, no threshold and no severity |
 | [Memory Analysis — empty](docs/screenshots/memory-empty.png) | The zero state gives the two commands that write a dump, and states that a gzip stream and a class histogram are refused by name |
+| [Performance Lab — a benchmark result](docs/screenshots/performance-lab-benchmark-upload.png) | Selecting *Benchmark Result* before upload: only the `-rf json` array is read, and the JVM's arguments are counted rather than stored |
+| [Performance Lab — a benchmark run](docs/screenshots/performance-lab-benchmark-run.png) | `277` measurements from `14` entries, `BENCHMARK-READER=1.0.0`, the harness's own summary — and the banner: *"Quoted from the benchmark harness — not measured here"* |
+| [Performance Lab — benchmark provenance](docs/screenshots/performance-lab-benchmark-provenance.png) | JMH `1.37` on JDK `21.0.5`, the three modes, `jvmArgs` `0 in the file, none stored` with the reason, `6` entries with no per-iteration values, and *comparisons made: no* |
+| [Performance Lab — a quoted score](docs/screenshots/performance-lab-benchmark-measurements.png) | One score expanded: `10.359 ops/us`, reduction `as reported`, and the basis — *"quoted from the benchmark result file … No threshold was applied and no severity was assigned"* — beside the check that it is the mean of the 6 per-iteration values across 2 forks |
+| [Performance Lab — the artefact](docs/screenshots/performance-lab-benchmark-artifact.png) | `BENCHMARK RESULT`, `277` measurements from one file, and the job list now naming `BENCHMARK_IMPORT` alongside the three other runtime readers |
 | [Settings](docs/screenshots/settings.png) | Connection, sandbox roots, AI provider status, privacy controls |
+| [Settings — artefact retention](docs/screenshots/settings-retention.png) | The window (`30` days), what is stored (`1 (281 KB)`), what a pass would remove, and *"Nothing is past this window"* instead of a bare empty table |
 | [Command palette](docs/screenshots/command-palette.png) | `Ctrl K` |
 | [Capability page](docs/screenshots/capability-not-available.png) | What an unimplemented destination says instead of showing empty results |
 | [Overview](docs/screenshots/overview.png) | Repository inventory, job activity and system status |
@@ -94,14 +100,17 @@ rather than pretending.
 | Settings | **Working** | Connection, workspace roots, AI provider status, privacy switches |
 | Bearer-token auth, loopback bind | **Working** | Single-operator model; CSRF disabled by design ([ADR 0005](docs/adr/0005-auth-model.md)) |
 | Runtime evidence — JFR ingestion and reading | **Working** | Upload a recording, stored by SHA-256 under `<data-dir>/artifacts`; the JDK's Flight Recorder API reads it in process. 101 measurements from a 3.3 s live recording |
-| Runtime evidence — measurement model | **Working** | `runtime_measurement`: unit, kind, reduction (`COUNT`/`SUM`/`MEAN`/`MAX`), sample count, scope and per-metric caveats. No thresholds, no severity, no percentiles — by design ([ADR 0008](docs/adr/0008-runtime-evidence.md)) |
-| Runtime evidence — Performance Lab | **Working** | Run header, provenance, measurements filtered by family and kind, artefacts with their support status. Hosts both readers, and the family filter follows the artefact type |
+| Runtime evidence — measurement model | **Working** | `runtime_measurement`: unit, kind, reduction (`COUNT`/`SUM`/`MEAN`/`MAX`/`AS_REPORTED`), sample count, scope and per-metric caveats. No thresholds, no severity, no percentiles — by design ([ADR 0008](docs/adr/0008-runtime-evidence.md)) |
+| Runtime evidence — Performance Lab | **Working** | Run header, provenance, measurements filtered by family and kind, artefacts with their support status. Hosts all four readers, and the family filter follows the artefact type |
 | Runtime evidence — thread dumps | **Working** | The plain-text `Thread.print` / `jstack` / `kill -3` dump: thread states, monitor contention and the deadlocks the JVM's own detector reported. The two `Thread.dump_to_file` formats are refused by name — they carry no states and no lock ownership, so a report from them would be zeros ([ADR 0009](docs/adr/0009-thread-dump-evidence.md)) |
 | Concurrency Inspector | **Working** | One analysed dump: states with share bars and the `RUNNABLE` caveat, deadlock cycles as thread → monitor → holder, the contention table, and the depth/held maxima. No thresholds, no severity |
 | Runtime evidence — heap dumps | **Working** | The binary HPROF file `jmap`, `jcmd GC.heap_dump` and the OOM hook write, read in two passes: the class table, then the heap. A gzip stream, a class histogram and a thread dump are each refused by name, with the command that produces a readable file ([ADR 0010](docs/adr/0010-heap-dump-evidence.md)) |
 | Memory Analysis | **Working** | One analysed dump: the census (instances, arrays and their recorded bytes), the two type tables with their shares and the `TOP_N = 20` disclosure, the GC roots by kind, and the largest single object. **No retained size, no leak verdict, no threshold, no severity** — every byte row states its basis |
 | [Local AI provider abstraction](docs/adr/0002-local-first-ai.md) | **Partial** | Ollama client, health, capability reporting. No investigation flow yet |
-| Benchmark import + regression view | **Not yet** | Corpus and measurement scripts exist; the `BENCHMARK_IMPORT` handler does not |
+| Runtime evidence — benchmark results | **Working** | The JSON array `-rf json` writes, from JMH and harnesses that follow it. Every score, error, confidence bound and percentile is quoted `AS_REPORTED` with the harness's own unit; the JVM's arguments are counted and not stored ([ADR 0011](docs/adr/0011-benchmark-evidence.md)) |
+| Benchmark import in the UI | **Working** | The run card says the figures are the harness's, not this build's; provenance lists modes, parameters, iteration times, JMH and JDK versions, and *comparisons made: no* |
+| Artefact retention | **Working** | A purge removes the stored **file** of an artefact past the window; the row, the run and every measurement are kept. The plan is computed live and *is* the dry run; a zero-day window is refused rather than read as "everything" ([ADR 0012](docs/adr/0012-artefact-retention.md)) |
+| Benchmark regression / baseline view | **Not yet, by design** | One upload states one run, and RepoPilot holds no baseline to compare it with. Nothing in the product claims a delta it did not measure |
 | AI investigation with citation checking | **Not yet** | The evidence rules are designed; the flow is not implemented |
 | Embeddings / pgvector | **Not yet** | Off by default; deliberately not started without a proven need |
 
@@ -449,7 +458,7 @@ What the numbers must not be read as:
   unreachable is a reachability computation over the whole graph, and this build does not run one.
   `produced.retainedSizesComputed` is `false` in the provenance and the run summary says so.
 - **A dump is one instant.** Nothing here is a rate, a growth curve or a comparison with an earlier
-  dump. There is no `BENCHMARK_IMPORT` and no heap-over-time view.
+  dump. A benchmark result is a different artefact type with its own reader, and it is one run too.
 - **Three files are refused by name**, each with the command that produces a readable one: a gzip
   stream (`GC.heap_dump -gz=<level>` — decompressing a 2.6 MB file into 10 MB inside a job is not
   something an upload's size limit can defend against), a class histogram (`jmap -histo` /
@@ -457,6 +466,60 @@ What the numbers must not be read as:
   artefact type with its own reader).
 
 The full reasoning is in [ADR 0010](docs/adr/0010-heap-dump-evidence.md).
+
+### And what a benchmark result produces
+
+Not a measurement RepoPilot took. A benchmark result file is written by a harness, on a machine
+RepoPilot has never seen, under a configuration the operator assembled — so every number in it is
+**quoted**, and the fourth evidence label is *external claim*.
+
+The fixtures are two real JMH runs of one three-method, two-parameter fixture
+([corpus/benchmarks](corpus/benchmarks/README.md), JMH 1.37, JDK 21.0.5, not a performance claim):
+
+| Read from the file | `-f 1` (129 658 B) | `-f 2` (287 856 B) |
+| --- | --- | --- |
+| Benchmark entries | 14 | 14 |
+| Measurements written | 254 | 277 |
+| Modes | `thrpt`, `avgt`, `sample` | `thrpt`, `avgt`, `sample` |
+| Parameter | `size` = 16, 256 | `size` = 16, 256 |
+| Entries with no per-iteration values | 6 (every sample-mode entry) | 6 |
+| Entries with no error estimate | 8 — JMH writes `"scoreError": "NaN"`, a *string* | 0 |
+| `jvmArgs` recorded / stored | 0 / **0** | 0 / **0** |
+| Thresholds applied / comparisons made | none / **none** | none / **none** |
+
+What the reader does with that:
+
+- **Every value is `AS_REPORTED`, and the unit is the harness's.** `10.359 ops/us` is what the file
+  says; RepoPilot neither recomputes it nor converts it. A quoted percentile keeps the harness's own
+  level (`99.9999`) in the key. Counts — iterations, forks, threads — are `COUNT` rows.
+- **`"NaN"` is not `0.0`.** When JMH cannot compute an error it writes a quoted `NaN`; storing `0.0`
+  would be the strongest precision claim a measurement can make, and one the file never made. So no
+  error row is written and the provenance counts the entries that lack one.
+- **The score is checked against the file's own numbers, never corrected.** Where `rawData` exists,
+  the stated score is compared with the mean of the per-iteration values (6 values across 2 forks in
+  the `-f 2` fixture) and the row says so. Sample-mode entries record a histogram instead, and their
+  row says `not checkable`. Nothing is stored as a result of the check.
+- **The JVM command line is counted, not stored.** A `-D` argument is where a credential lives; the
+  same rule the JFR reader applies to a recording's command-line events applies here. Declared
+  parameters *are* stored, because they identify the measurement.
+- **No baseline, no comparison, no threshold, no severity.** There is no regression view because
+  there is nothing to regress against: one upload states one run. `produced.comparisonsMade` is
+  `false` and the run summary ends "nothing compared with anything".
+- **The other shapes JMH writes are refused by name**, with `-rf json -rff results.json`: the CSV and
+  text tables (both lose the percentiles and the per-iteration values) and a gzip file. A JSON array
+  that is not a result file has no header to check at upload, so it is stored and its import **fails**
+  naming the field it lacked — rather than producing a run with no measurements.
+
+### And what retention does to a stored file
+
+A purge removes the **stored file** of an artefact past the window, and nothing else: the artefact
+row stays (marked `purged_at`), the analysis run stays, and every measurement stays. The plan is
+computed against the current clock on every read — reading it *is* the dry run — and it states, per
+candidate file, how many measurements would survive. A window of `0` means pruning is off and names
+no candidate; an explicit purge with no window is a `400`, not "everything". Uploading the same bytes
+again restores the file, because storage is content-addressed.
+
+The full reasoning is in [ADR 0012](docs/adr/0012-artefact-retention.md).
 
 ---
 
@@ -489,6 +552,16 @@ posture is documented in [docs/security.md](docs/security.md); the rules that ma
   after it commits, and a startup sweep removes any artefact directory whose repository is no
   longer in the database. A heap dump is process memory, so "deleted" means deleted rather than
   "no longer listed". Thread dumps are removed the same way, for the same reason.
+- **A benchmark result's command line is counted, never stored.** JMH writes `jvmArgs` and the path
+  to the JVM binary into every result file, whether or not anyone meant to publish them. The reader
+  keeps the count and drops the contents; the provenance says so in the reader's own words. The
+  fixture files happen to carry no arguments, which is asserted rather than assumed.
+- **Retention removes bytes, not evidence — and only bytes it can name.** A pass deletes the stored
+  file of an artefact older than the configured window and marks the row; the run and every
+  measurement are kept, so the numbers survive the input they came from. The plan is a live read and
+  lists each candidate with its size and the measurements that would survive it. A zero window means
+  "off" and an explicit purge with no window is refused, so no unset value can be read as "delete
+  everything". Runs are never deleted by age, and there is no per-artefact delete endpoint.
 - **Uploads are bounded twice.** `spring.webflux.multipart.max-disk-usage-per-part` (2 GiB,
   `REPOPILOT_MAX_PART_DISK_BYTES`) stops an oversized stream while it is still arriving;
   `repopilot.analysis.max-artifact-size-bytes` (1 GiB) is the published limit, checked on the
@@ -500,6 +573,8 @@ posture is documented in [docs/security.md](docs/security.md); the rules that ma
   which is parsed in process and whose stacks are never copied out of the file. Neither does a
   heap dump, which is walked in two streaming passes and whose object contents are never copied
   anywhere — the only thing stored from it is the census and, per type row, the type's own name.
+  A benchmark result is parsed in process and only its quoted figures are stored; the file's
+  command line and JVM path are not.
 
 ---
 
@@ -510,8 +585,9 @@ backend/                     Spring Boot 3.5 · Java 21 · WebFlux + JPA
   src/main/java/dev/repopilot/
     api/v1/                  REST controllers
     analysis/                the analysis spine: analyzers, runner, findings, query views
-    runtime/                 artefact storage, measurement contract, read path, and the three
+    runtime/                 artefact storage, measurement contract, read path, and the four
                              readers: JFR (jfr/), thread dumps (threaddump/), heap dumps (heapdump/)
+                             and benchmark results (benchmark/), plus artefact retention (retention/)
     codeindex/               scan · parse · resolve · persistence · query · index
     jobs/                    durable queue, workers, lifecycle, handlers
     repository/              registration, revisions, sandbox, scan policy
@@ -520,7 +596,7 @@ backend/                     Spring Boot 3.5 · Java 21 · WebFlux + JPA
     security/                bearer auth, rate limiting, startup validation
     observability/           health indicators, metrics, tracing
     shared/                  clock, errors, correlation ids, persistence base
-  src/main/resources/db/migration/   Flyway migrations (V1–V4)
+  src/main/resources/db/migration/   Flyway migrations (V1–V5)
 frontend/                    React 18 · TypeScript (strict) · Vite
   src/pages/                 the nine destinations
   src/components/            shell, palette, dialogs, tables, code view
@@ -564,6 +640,8 @@ Architecture decisions are recorded as ADRs in [docs/adr](docs/adr):
 | [0008](docs/adr/0008-runtime-evidence.md) | Runtime measurements are not findings: no thresholds, no severity, no percentiles |
 | [0009](docs/adr/0009-thread-dump-evidence.md) | Thread dumps: read the rich format, report the JVM's own deadlock verdict, never search on its behalf |
 | [0010](docs/adr/0010-heap-dump-evidence.md) | Heap dumps: a census, not a memory model — recorded bytes with a stated basis, no retained size |
+| [0011](docs/adr/0011-benchmark-evidence.md) | Benchmark results: quote the harness, apply no threshold, compare nothing |
+| [0012](docs/adr/0012-artefact-retention.md) | Artefact retention: the file goes, the evidence stays |
 
 Further reading:
 
@@ -584,9 +662,9 @@ Stated plainly, because a tool that hides these cannot be trusted with the other
   single-threaded in-process ruleset, so rules that need type resolution cannot match. The
   built-in rules are name- and shape-based, and each finding says so in `limitations`.
 - **SpotBugs and AI investigation are not implemented yet.** The
-  job types and the evidence rules exist; the handlers do not. Those screens say so, and an
-  artefact of a type this build cannot read (a benchmark result) is stored and refused by name
-  rather than analysed into nothing.
+  job types and the evidence rules exist; the handlers do not. Those screens say so. Every
+  runtime artefact type now has a reader, and a type the API does not know is refused as a bad
+  request at upload rather than stored unread.
 - **A heap dump is a census, never a memory model.** There is no dominator tree, so there is no
   retained size, no leak verdict and no "this classloader is holding the heap" — a type near the
   top of the table is a type whose objects *hold a lot of recorded data*, and the table that says
@@ -617,10 +695,19 @@ Stated plainly, because a tool that hides these cannot be trusted with the other
   framework's per-part disk cap (2 GiB, `REPOPILOT_MAX_PART_DISK_BYTES`) while the part is
   arriving, and `repopilot.analysis.max-artifact-size-bytes` (1 GiB) on the landed file — and
   the two are meant to be raised together.
-- **Artefacts are never pruned by age.** `repopilot.storage.retention-days` is bound and unused,
-  and the `ARTIFACT_RETENTION` job type has no handler, so a recording stays on disk until its
-  repository is deleted or the file is removed by hand. Deleting a repository does remove its
-  bytes, and startup removes orphans; neither is a retention policy.
+- **A benchmark result is quoted, not verified on your machine.** The score, its error, its
+  confidence bounds and its percentiles are the harness's own arithmetic on a machine RepoPilot
+  has never seen. The reader checks the stated score against the per-iteration values the same file
+  records where they exist, and says `not checkable` where they do not; it does not run the
+  benchmark, cannot reproduce the environment, and compares nothing with a baseline it does not
+  have. If the harness wrote `"scoreError": "NaN"`, no error figure is stored — a zero would be a
+  precision claim the file never made.
+- **Retention removes files, not rows, and has no per-artefact control.** A purge deletes the stored
+  bytes of artefacts older than the window, keeps the artefact row (marked `purged_at`), the run and
+  every measurement, and can be undone only by uploading the same bytes again. There is no
+  "never purge this one", no per-type window and no on-demand delete for a single artefact; the
+  window is one number per repository, and a zero window means pruning is off rather than
+  "everything".
 - **The benchmark corpus says nothing about rule quality.** It was generated for indexing
   volume and triggers exactly one PMD rule 600 times. The rule-variety evidence is the
   fixture, which is small and hand-written.

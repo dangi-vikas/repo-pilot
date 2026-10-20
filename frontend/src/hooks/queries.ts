@@ -23,6 +23,7 @@ import type {
   OverviewView,
   PageResponse,
   RepositorySummary,
+  RetentionPlan,
   RevisionLookup,
   RuntimeArtifactType,
   RuntimeArtifactView,
@@ -388,6 +389,43 @@ export function useAnalyzeArtifact(repositoryId: Uuid | null) {
       void queryClient.invalidateQueries({ queryKey: ["job-counters"] });
       void queryClient.invalidateQueries({ queryKey: ["runtime-summary", repositoryId] });
       void queryClient.invalidateQueries({ queryKey: ["runtime-artifacts", repositoryId] });
+    },
+  });
+}
+
+/**
+ * What a retention pass would remove.
+ *
+ * Keyed by the window, because a preview of a different window is a different answer and must not be
+ * shown under the heading of the one on screen.
+ */
+export function useRetentionPlan(repositoryId: Uuid | null, days?: number) {
+  return useQuery<RetentionPlan>({
+    queryKey: ["retention-plan", repositoryId, days ?? "CONFIGURED"],
+    queryFn: ({ signal }) => api.retentionPlan(repositoryId as Uuid, days, signal),
+    enabled: repositoryId !== null,
+    ...guard(),
+  });
+}
+
+/**
+ * Queues a purge of stored bytes older than a window.
+ *
+ * Every runtime query is invalidated, not only the plan: the artefact rows gain a `purgedAt`, the
+ * files leave the list's "stored" count, and a job appears in the queue. The measurements do not
+ * change, which is the point — but they are invalidated anyway so the screen is not left asserting
+ * that nothing happened.
+ */
+export function usePurgeRetention(repositoryId: Uuid | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (olderThanDays: number) => api.purgeRetention(repositoryId as Uuid, olderThanDays),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["retention-plan", repositoryId] });
+      void queryClient.invalidateQueries({ queryKey: ["runtime-artifacts", repositoryId] });
+      void queryClient.invalidateQueries({ queryKey: ["runtime-summary", repositoryId] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["job-counters"] });
     },
   });
 }

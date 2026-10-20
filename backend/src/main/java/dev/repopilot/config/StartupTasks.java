@@ -46,8 +46,10 @@ import java.util.stream.Stream;
  *       the database is removed. This is the second half of a repository deletion: the rows go
  *       when the user asks, the bytes go after that, and a crash in between would otherwise strand
  *       them. Only directories named after a repository id the database does not know are
- *       touched; nothing is pruned by age, because nothing in this build prunes by age yet
- *       (see docs/security.md, "Artefacts and retention").</li>
+ *       touched. Age is <em>not</em> a criterion here: pruning by age is an operator's policy, it is
+ *       applied by the {@code ARTIFACT_RETENTION} job under the configured window, and it removes only
+ *       the stored bytes while keeping every row and measurement (see docs/adr/0012). This sweep is
+ *       about bytes no record points at, which no policy would ever reach.</li>
  * </ol>
  */
 @Component

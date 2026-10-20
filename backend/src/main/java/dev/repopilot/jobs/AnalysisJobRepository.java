@@ -56,6 +56,23 @@ public interface AnalysisJobRepository extends JpaRepository<AnalysisJob, UUID> 
 
     long countByStatusIn(List<JobStatus> statuses);
 
+    /**
+     * Active jobs for a repository, minus the ones that are merely housekeeping.
+     *
+     * <p>Used by the "one job at a time per repository" guard. A retention pass is queued at the
+     * lowest priority precisely so that it can wait, and it must not make a user's analysis wait
+     * behind it: counting it as activity would turn background maintenance into a lock.
+     */
+    @Query("""
+            SELECT COUNT(j) FROM AnalysisJob j
+            WHERE j.repositoryId = :repositoryId
+              AND j.status IN :statuses
+              AND j.jobType NOT IN :excludedTypes
+            """)
+    long countByRepositoryIdAndStatusInAndJobTypeNotIn(@Param("repositoryId") UUID repositoryId,
+                                                       @Param("statuses") List<JobStatus> statuses,
+                                                       @Param("excludedTypes") List<JobType> excludedTypes);
+
     @Query("""
             SELECT COUNT(j) FROM AnalysisJob j
             WHERE j.status = dev.repopilot.jobs.JobStatus.RUNNING

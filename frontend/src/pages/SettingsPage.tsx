@@ -1,9 +1,17 @@
 import { useState } from "react";
 import { Modal } from "@/components/Modal";
-import { Badge, Banner, Card, EmptyState, KeyValue, Loading, PageHeader } from "@/components/ui";
-import { useBootstrap, useDeleteRepository, useReadiness, useRepositories } from "@/hooks/queries";
+import { Badge, Banner, Card, EmptyState, ErrorState, KeyValue, Loading, PageHeader } from "@/components/ui";
+import {
+  useBootstrap,
+  useDeleteRepository,
+  usePurgeRetention,
+  useReadiness,
+  useRepositories,
+  useRetentionPlan,
+} from "@/hooks/queries";
 import { ApiError } from "@/lib/api";
-import type { RepositorySummary } from "@/lib/types";
+import { formatBytes, formatNumber, formatRelative, titleCase } from "@/lib/format";
+import type { RepositorySummary, Uuid } from "@/lib/types";
 import { useSelection } from "@/state/selection";
 import { useSession } from "@/state/session";
 import { useThemeContext } from "@/state/theme";
@@ -21,7 +29,7 @@ export function SettingsPage() {
   const { theme, toggle } = useThemeContext();
   const bootstrap = useBootstrap();
   const readiness = useReadiness();
-  const { workspaceId, selectRepository } = useSelection();
+  const { workspaceId, repositoryId, selectRepository } = useSelection();
   const repositories = useRepositories(workspaceId);
   const deleteRepository = useDeleteRepository();
 
@@ -122,12 +130,19 @@ export function SettingsPage() {
               </li>
               <li>
                 <span className="bullet" />
+                Uploaded runtime artefacts are stored locally and never uploaded anywhere. Retention removes the bytes
+                of old ones and keeps the numbers derived from them — see below.
+              </li>
+              <li>
+                <span className="bullet" />
                 Repository content is treated as untrusted input. Text inside a source file that tries to instruct the
                 model is data, not a command.
               </li>
             </ul>
           </div>
         </Card>
+
+        <RetentionCard repositoryId={repositoryId} />
 
         <Card title="Appearance">
           <div className="rp-row">
@@ -280,5 +295,227 @@ export function SettingsPage() {
         </Modal>
       ) : null}
     </>
+  );
+}
+
+/**
+ * Artefact retention: what is stored, what a pass would remove, and what it would keep.
+ *
+ * The screen is built around one distinction that the backend enforces and that a "delete" button
+ * would hide: a purge removes the uploaded file and nothing else. The artefact row, the analysis run
+ * and every measurement stay, which is why the candidate table states the number of measurements each
+ * file produced, and why the confirmation repeats it. A window of zero means automatic pruning is off,
+ * and then the screen says so instead of showing an empty list that would read as "nothing is old".
+ */
+function RetentionCard({ repositoryId }: { repositoryId: Uuid | null }) {
+  const [window, setWindow] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [queued, setQueued] = useState<string | null>(null);
+
+  // An empty box means "the window configured on the backend"; a number previews that window
+  // instead. The preview and the purge use the same number, so what is confirmed is what was shown.
+  // A box holding something that is not a whole number of days disables the button rather than
+  // falling back to the configured window: a control that says one thing and acts on another is
+  // worse than a disabled control.
+  const enteredText = window.trim();
+  const entered = enteredText === "" ? undefined : Number(enteredText);
+  const enteredIsWindow = entered !== undefined && Number.isFinite(entered) && entered >= 1;
+  const preview = enteredIsWindow ? Math.trunc(entered) : undefined;
+  const plan = useRetentionPlan(repositoryId, preview);
+  const purge = usePurgeRetention(repositoryId);
+
+  const data = plan.data;
+  const days = entered === undefined ? (data?.retentionDays ?? 0) : preview ?? 0;
+  const candidates = data?.candidates ?? [];
+  const removableBytes = candidates.reduce((total, candidate) => total + candidate.sizeBytes, 0);
+  const measurementsKept = candidates.reduce((total, candidate) => total + candidate.measurementCount, 0);
+
+  return (
+    <Card
+      title="Artefact retention"
+      actions={
+        data !== undefined ? (
+          <Badge tone={data.automatic ? "success" : "neutral"} dot>
+            {data.automatic ? `window ${formatNumber(data.retentionDays)} day(s)` : "pruning off"}
+          </Badge>
+        ) : null
+      }
+    >
+      {repositoryId === null ? (
+        <p className="rp-muted" style={{ fontSize: "var(--text-sm)" }}>
+          Select a repository to see what retention would remove from it. Uploaded runtime artefacts are stored per
+          repository.
+        </p>
+      ) : plan.isLoading ? (
+        <Loading label="Reading the retention plan" />
+      ) : plan.isError || data === undefined ? (
+        <ErrorState message="The retention plan could not be read." onRetry={() => void plan.refetch()} />
+      ) : (
+        <div className="stack-3">
+          <p className="rp-muted" style={{ fontSize: "var(--text-sm)" }}>
+            A retention pass removes the <strong>stored file</strong> of an old artefact. It does not delete the
+            artefact, the analysis run or any measurement: those are the evidence, and the file is only the input it
+            was read from. Purging an artefact makes it impossible to analyse again until the file is uploaded once
+            more.
+          </p>
+
+          <KeyValue
+            items={[
+              {
+                label: "Configured policy",
+                value: data.automatic
+                  ? `Remove stored files older than ${formatNumber(data.retentionDays)} day(s)`
+                  : "Automatic pruning is off; a pass runs only when you name a window",
+              },
+              {
+                label: "Cutoff for this plan",
+                value: `${formatRelative(data.cutoff)}${data.oldestStoredAt != null ? ` · oldest stored file ${formatRelative(data.oldestStoredAt)}` : ""}`,
+              },
+              {
+                label: "Stored files",
+                value: `${formatNumber(data.storedArtefacts)} (${formatBytes(data.storedBytes)})`,
+              },
+              {
+                label: "Files already purged",
+                value:
+                  data.purgedArtefacts === 0
+                    ? "none"
+                    : `${formatNumber(data.purgedArtefacts)} (${formatBytes(data.purgedBytes)} released) — their measurements are still here`,
+              },
+            ]}
+          />
+
+          <div className="toolbar">
+            <label className="rp-muted" htmlFor="retention-window" style={{ fontSize: "var(--text-sm)" }}>
+              Window (days)
+            </label>
+            <input
+              id="retention-window"
+              className="input"
+              type="number"
+              min={1}
+              step={1}
+              style={{ maxWidth: 140 }}
+              value={window}
+              placeholder={data.retentionDays > 0 ? String(data.retentionDays) : "30"}
+              onChange={(event) => {
+                setQueued(null);
+                setWindow(event.target.value);
+              }}
+            />
+            <button
+              type="button"
+              className="btn btn-danger btn-sm"
+              disabled={days < 1 || candidates.length === 0 || purge.isPending}
+              title={
+                days < 1
+                  ? "Name a window of at least one day. An empty window is not read as \"purge everything\"."
+                  : candidates.length === 0
+                    ? "No stored file is past this window."
+                    : "Queue a pass that removes the stored files listed below"
+              }
+              onClick={() => {
+                setQueued(null);
+                setConfirming(true);
+              }}
+            >
+              Purge stored files
+            </button>
+            <span className="rp-faint" style={{ fontSize: "var(--text-xs)" }}>
+              {candidates.length === 0
+                ? "Nothing is past this window."
+                : `${formatNumber(candidates.length)} file(s), ${formatBytes(removableBytes)} removable, ${formatNumber(measurementsKept)} measurement(s) kept`}
+            </span>
+          </div>
+
+          {purge.isError ? (
+            <Banner tone="danger" title="The purge could not be queued">
+              {purge.error instanceof ApiError
+                ? purge.error.message
+                : purge.error instanceof Error
+                  ? purge.error.message
+                  : "Unknown error."}
+            </Banner>
+          ) : null}
+
+          {queued !== null ? (
+            <Banner tone="success" title="Purge queued">
+              {queued}
+            </Banner>
+          ) : null}
+
+          {candidates.length === 0 ? null : (
+            <div className="table-wrap">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>File</th>
+                    <th>Type</th>
+                    <th>Stored</th>
+                    <th className="table-num">Bytes</th>
+                    <th className="table-num">Measurements kept</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {candidates.map((candidate) => (
+                    <tr key={candidate.artifactId}>
+                      <td className="rp-truncate" style={{ maxWidth: 320 }} title={candidate.originalFilename}>
+                        {candidate.originalFilename}
+                      </td>
+                      <td>{titleCase(candidate.artifactType)}</td>
+                      <td className="nowrap">{formatRelative(candidate.createdAt)}</td>
+                      <td className="table-num nowrap">{formatBytes(candidate.sizeBytes)}</td>
+                      <td className="table-num">{formatNumber(candidate.measurementCount)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {confirming && data !== undefined ? (
+        <Modal
+          title="Purge stored artefact files"
+          onClose={() => setConfirming(false)}
+          footer={
+            <>
+              <div className="rp-spacer" />
+              <button type="button" className="btn" onClick={() => setConfirming(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={purge.isPending}
+                onClick={() => {
+                  purge.mutate(days, {
+                    onSuccess: () => {
+                      setConfirming(false);
+                      setQueued(
+                        `A retention pass for files older than ${formatNumber(days)} day(s) is queued. It removes ${formatNumber(candidates.length)} stored file(s) and keeps the ${formatNumber(measurementsKept)} measurement(s) derived from them.`,
+                      );
+                    },
+                  });
+                }}
+              >
+                {purge.isPending ? "Queueing…" : "Purge stored files"}
+              </button>
+            </>
+          }
+        >
+          <p>
+            Remove the stored bytes of <strong>{formatNumber(candidates.length)} file(s)</strong> older than{" "}
+            <strong>{formatNumber(days)} day(s)</strong>, reclaiming{" "}
+            <strong>{formatBytes(removableBytes)}</strong>?
+          </p>
+          <p className="rp-muted" style={{ fontSize: "var(--text-sm)" }}>
+            The {formatNumber(measurementsKept)} measurement(s) recorded from these files are kept, and so are their
+            analysis runs. Re-analysing a purged artefact will be refused until its file is uploaded again.
+          </p>
+        </Modal>
+      ) : null}
+    </Card>
   );
 }

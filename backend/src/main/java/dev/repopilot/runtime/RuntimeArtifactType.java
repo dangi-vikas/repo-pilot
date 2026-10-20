@@ -12,11 +12,14 @@ import java.util.Optional;
  * treated as untrusted input: it is stored by content hash, parsed by a reader that
  * never executes anything in it, and never written into a repository working tree.
  *
- * <p>A parser exists for {@link #JFR_RECORDING}, {@link #HEAP_DUMP} and {@link #THREAD_DUMP}. The other
- * constants exist because the schema and the job types already name them, and because a refusal
- * that names the missing capability ("benchmark import is not implemented in this build") is more
- * useful than a generic rejection. {@link #jobType()} is what makes that refusal
- * precise, and {@link #supported()} is what makes it honest.
+ * <p>A parser exists for all four constants: {@link #JFR_RECORDING}, {@link #HEAP_DUMP},
+ * {@link #THREAD_DUMP} and {@link #BENCHMARK_RESULT}. {@link #supported()} and
+ * {@link #unsupportedReason()} remain because the shape they enforce is what makes a refusal precise
+ * — "stored, not analysed, and here is why" rather than a generic rejection — and because a build that
+ * ships a reader behind a flag, or one that is asked to store a format it does not yet parse, needs
+ * that answer to be a property of the type rather than a special case in the upload path. No member of
+ * this enum is unread today: every supported type has a reader, so the unread-artefact path is a
+ * mechanism with no current instance rather than an untested claim.
  */
 public enum RuntimeArtifactType {
 
@@ -38,13 +41,20 @@ public enum RuntimeArtifactType {
     THREAD_DUMP("txt", JobType.THREAD_DUMP_ANALYSIS, true, false),
 
     /**
-     * A benchmark result file. Needs the benchmark importer; not implemented.
+     * A benchmark result file ({@code .json}) in the shape JMH writes with {@code -rf json}.
      *
-     * <p>Kept unread rather than refused, because it is a summary the operator already produced and
-     * throwing it away would lose evidence. It is a file of numbers and names about a build, not a
-     * dump of a process's memory, so it is not flagged as one.
+     * <p>Read as a witness rather than as data: the numbers in it were computed by the harness that
+     * ran the benchmark, on a machine RepoPilot has never seen, so they are stored as quoted values
+     * ({@link MeasurementAggregation#AS_REPORTED}) rather than as reductions this build performed.
+     * The other shapes JMH can write — {@code -rf csv}, {@code -rf text} and the console table — are
+     * refused by name, because a score rounded by a display formatter is not the score the harness
+     * computed and the per-iteration values that make a score checkable are missing from both.
+     *
+     * <p>It is a file of numbers and names about a build, not a dump of a process's memory, so it is
+     * not flagged as one. What it does contain is the JVM's own command line, which the reader counts
+     * and does not reproduce (see the benchmark reader for why).
      */
-    BENCHMARK_RESULT("json", JobType.BENCHMARK_IMPORT, false, false);
+    BENCHMARK_RESULT("json", JobType.BENCHMARK_IMPORT, true, false);
 
     private final String extension;
     private final JobType jobType;
@@ -95,11 +105,16 @@ public enum RuntimeArtifactType {
         return containsProcessMemory;
     }
 
-    /** Whether this build can parse it, for error messages that name the actual reason. */
+    /**
+     * Whether this build can parse it, for error messages that name the actual reason.
+     *
+     * <p>Null for every type today: each one has a reader. It stays a method on the type rather than a
+     * constant {@code false} because the alternative — the upload path deciding for itself what it
+     * cannot read — is how a stored-but-unreadable artefact comes to be reported as "upload failed".
+     */
     public String unsupportedReason() {
         return switch (this) {
-            case JFR_RECORDING, THREAD_DUMP, HEAP_DUMP -> null;
-            case BENCHMARK_RESULT -> "Benchmark import is not implemented in this build.";
+            case JFR_RECORDING, THREAD_DUMP, HEAP_DUMP, BENCHMARK_RESULT -> null;
         };
     }
 

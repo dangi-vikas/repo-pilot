@@ -1,0 +1,26 @@
+-- ===========================================================================
+-- Artifact retention: the stored bytes can be purged without losing the evidence.
+--
+-- An uploaded runtime artefact is two things: a file in the data directory and a
+-- row describing it. Retention removes the first and keeps the second, because the
+-- measurements derived from the file are the only copy of that evidence once the
+-- bytes are gone. Deleting the artefact row instead would cascade to the run and
+-- from there to every measurement the run produced, which is reclaiming disk by
+-- destroying the answer.
+--
+-- purged_at is therefore the whole state change:
+--   NULL        the file is in the artefact store and can be read again
+--   a timestamp the file has been removed, and the measurements that came out of
+--               it are what remains of this artefact
+--
+-- size_bytes is deliberately left alone when a row is purged: it is the size of
+-- the file that was received, which is a fact about the upload and the figure the
+-- retention report counts as reclaimed. It is not a claim that those bytes are
+-- still on disk.
+--
+-- A re-upload of the same bytes clears purged_at: storage is content-addressed, so
+-- the second upload restores exactly the file the first one produced, and the row
+-- must not go on saying the file is gone.
+-- ===========================================================================
+
+ALTER TABLE runtime_artifact ADD COLUMN purged_at TIMESTAMP WITH TIME ZONE;

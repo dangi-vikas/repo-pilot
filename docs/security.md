@@ -326,12 +326,43 @@ are removed after it commits, because filesystem work must not run inside a data
 database, which covers a deletion that was interrupted between the two steps. This matters because a
 heap dump contains process memory: "deleted" has to mean deleted, not "no longer listed".
 
-**Retention by age is not implemented.** This is a gap, stated plainly:
+**A benchmark result carries a command line, and the command line is not stored.** JMH writes the
+JVM's `jvmArgs`, its own parameters and the path to the JVM binary into every result file. `-D` is
+where a token, a connection string or a keystore password ends up, so the reader keeps only the
+*count* of arguments and never touches the binary path; the provenance records the count and the
+reader's own explanation. Declared `params` are stored, because they identify the measurement. The
+figures themselves are quoted `AS_REPORTED` with the harness's unit, and no threshold or severity is
+attached to any of them — the file is a statement by someone else's experiment, not an observation of
+this process.
 
-- `repopilot.storage.retention-days` (default 30) is **bound and unused**. Nothing reads it.
-- The `ARTIFACT_RETENTION` job type is declared and has **no handler**, so it cannot be submitted.
-- Consequence: an artefact whose repository still exists is never pruned by age. It stays until the
-  repository is deleted or the file is removed by hand.
+**Retention removes the file and keeps the evidence.** A pass deletes the stored bytes of an artefact
+older than the configured window and marks its row `purged_at`; the artefact row, the analysis run and
+every measurement stay. That is a deliberate asymmetry: the measurements are what the operator keeps,
+and the file is the bulk. The properties that make it safe:
+
+- **No unset value deletes anything.** `repopilot.storage.retention-days = 0` means pruning is off:
+  the scheduler queues nothing and the plan names no candidate. `POST /runtime/retention/purge` with
+  `olderThanDays` absent or ≤ 0 is a `400` whose message says it will not treat a missing window as
+  "everything". The service refuses as well, so a job submitted below the HTTP layer cannot inherit
+  the omission.
+- **The plan is a live read.** It recomputes candidates against the clock on every request, with the
+  bytes each would reclaim and the measurements that would survive. There is no stored plan to go
+  stale and no "dry run" flag on the job.
+- **Deletion order is chosen for failure.** Files are deleted first, then rows marked: a crash between
+  the two leaves a row whose file is missing (visible, recoverable by re-upload), never bytes with no
+  owner.
+- **Only the window can delete.** There is no per-artefact delete endpoint, no age-based deletion of
+  runs, and no path that removes measurements. Repository deletion remains the way to remove
+  everything, and it still removes bytes after the transaction commits.
+- **The scheduler queues rather than deletes.** One hourly pass (initial delay 120 s), a per-day
+  idempotency key, a per-repository `try`/`catch`, and the window written into the job's parameters —
+  so the pass records the policy it ran under even if the configuration changes afterwards.
+- **Re-uploading the same bytes restores the artefact**, because identity is the content hash and the
+  unique key is `(repositoryId, contentHash)`. Analysing a purged artefact before that is a `409`, not
+  a job that fails on a missing file.
+
+A startup orphan sweep is still the last line of defence: any artefact directory whose repository is
+not in the database is removed, which covers a deletion interrupted between its two steps.
 
 **Database deletion cascades; artefact bytes do not, except as described above.** Deleting a
 workspace removes its repositories' rows at the database level; their artefact directories are
@@ -362,6 +393,10 @@ both immediately.
   stored: the stack frames stay in the artefact, and thread names appear only where a deadlock
   cycle named them. A dump captured through a Windows shell (UTF-16 with a byte-order mark) is read
   rather than refused.
+- A benchmark result is parsed in process and only its quoted figures are stored: the JVM's
+  arguments are counted and discarded, and the path to the JVM binary is never read.
+- A retention pass removes stored bytes and never a measurement, never a run, and never anything
+  outside the window it was given; a window of zero removes nothing at all.
 - Every upload is bounded twice, and a refusal stores nothing and leaves no scratch file.
 - Deleting a repository removes its stored artefacts, not only its records.
 
@@ -380,15 +415,20 @@ both immediately.
 - **Analysis reads source as text and repeats what it finds.** A secret written in a file whose
   name is not credential-like will be read, and a rule may report its location (never its
   value). Redaction is a mitigation, not a proof.
-- **Artefacts are never pruned by age.** `retention-days` is bound but unused and
-  `ARTIFACT_RETENTION` has no handler, so a recording outlives its usefulness until its repository
-  is deleted. Stated again here because a retention setting that looks configured but does nothing
-  is exactly the kind of false assurance this document exists to avoid.
+- **Retention is a policy about bytes, and only about bytes.** A purge removes a stored file once it is
+  past the window; it does not remove the row, the run or the measurements, and it does not overwrite
+  the blocks. There is no per-artefact delete, no pinning and no per-type window — and a window of
+  zero means nothing is pruned, which is a deliberate choice against a silent default.
 - **An uploaded dump is stored, not sandboxed.** A heap dump is process memory in a file. RepoPilot
   does not read the ones it cannot parse, but it does write them to disk under the data directory,
   where they are protected by the filesystem's own permissions and nothing else. A thread dump is
   not process memory — it names threads and frames — but it is still a file on that disk, and it is
-  stored the same way.
+  stored the same way. Retention removes such a file once it is past the window, and the bytes are
+  gone from the disk at that point — but until then, and for any file inside the window, the
+  filesystem is the only control.
+- **Retention is not secure erasure.** Deleting a file does not overwrite the blocks it occupied, so
+  a heap dump removed by a purge may remain recoverable by someone with raw access to the disk. On
+  an encrypted volume that is a much smaller problem; on a shared one it is not.
 
 ## Reporting a vulnerability
 

@@ -7,6 +7,7 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -22,8 +23,15 @@ import java.util.UUID;
  * when a run starts reading the artefact. A recording uploaded but never analysed has no
  * run, and that is a state the UI reports rather than hides.
  *
- * <p>The entity is append-only by construction: nothing updates an artefact except that
- * single link, which is a claim about which run read it rather than a change to the file.
+ * <p>{@code purged_at} is the other, and it is not a deletion. Retention removes the file
+ * from the store when it is older than the configured window and records when it did so; the
+ * row, its run and every measurement the run produced all stay, because those measurements
+ * are the only copy of the evidence once the bytes are gone. The row is the record that the
+ * evidence existed and where it came from; the file was a copy of it.
+ *
+ * <p>The entity is therefore append-only in spirit rather than in mechanism: two fields change
+ * after creation, and both changes are claims about the file's availability rather than
+ * rewrites of what was received. Nothing here changes a hash, a size or a name.
  */
 @Entity
 @Table(name = "runtime_artifact")
@@ -65,6 +73,16 @@ public class RuntimeArtifact extends AbstractCreatedEntity {
      */
     @Column(name = "metadata_json", length = 8000)
     private String metadataJson;
+
+    /**
+     * When the stored bytes were removed by retention, or null while the file is on disk.
+     *
+     * <p>Written in one place: the retention pass, after the file is gone. A re-upload of the same
+     * bytes clears it, because content-addressed storage puts the file back at exactly the path this
+     * row names.
+     */
+    @Column(name = "purged_at")
+    private Instant purgedAt;
 
     protected RuntimeArtifact() {
     }
@@ -117,5 +135,30 @@ public class RuntimeArtifact extends AbstractCreatedEntity {
 
     public void setMetadataJson(String metadataJson) {
         this.metadataJson = metadataJson;
+    }
+
+    public Instant getPurgedAt() {
+        return purgedAt;
+    }
+
+    /** Whether the stored file has been removed, leaving the row and its measurements behind. */
+    public boolean isPurged() {
+        return purgedAt != null;
+    }
+
+    /** Records that the stored bytes are gone. Called after the file is deleted, never before. */
+    public void markPurged(Instant purgedAt) {
+        this.purgedAt = purgedAt;
+    }
+
+    /**
+     * Records that the stored bytes are present again.
+     *
+     * <p>Only the upload path calls this, and only for a row whose file has just been written back at
+     * the same content-addressed path: the same bytes re-uploaded are the same artefact, so the row
+     * must stop saying the file is gone rather than accumulating a second row for it.
+     */
+    public void markStored() {
+        this.purgedAt = null;
     }
 }

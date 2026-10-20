@@ -512,6 +512,88 @@ What is specific to a heap dump, and why:
    upload's size limit hand a worker an unbounded amount of work, so the refusal names the one-line
    fix instead.
 
+### How a benchmark result is read
+
+The fourth reader, and the first artefact that RepoPilot did **not** observe. The lifecycle is
+identical; what changes is the claim each row makes:
+
+```text
+POST /repositories/{id}/runtime/artifacts          ← same endpoint, same content-addressed store
+  │  the format check is deliberately weak: JSON has no header, so the claim available at
+  │  upload is "first non-space byte is '['" over the first 4 KiB, plus the 64 MiB bound.
+  │  CSV, text and gzip are refused by name with '-rf json -rff results.json'.
+  ▼
+POST /repositories/{id}/runtime/artifacts/{artifactId}/analyze
+  ▼
+job row (BENCHMARK_IMPORT, QUEUED)
+  ▼
+AbstractRuntimeAnalysisHandler.execute()
+  │  1. repository id → artefact → type → supported?, or refuse before any run exists
+  │  2. analysis_run row: RUNNING, reader version ('benchmark-reader=1.0.0')
+  │  3. BenchmarkImportJobHandler.analyse(path, …)
+  │       BenchmarkReader          → BenchmarkResultReport   ← structural check, names the entry
+  │       BenchmarkMeasurementMapper → List<MeasurementDraft> (pure function)
+  │  4. persist in a batch, checkpointing per entry
+  │  5. analysis_run → SUCCEEDED | FAILED | CANCELLED, with the summary and provenance
+  ▼
+GET /repositories/{id}/runtime/measurements?metric=benchmark&runId=…      ← the Performance Lab
+```
+
+What is specific to a benchmark result:
+
+1. **Every value is `AS_REPORTED`.** The harness computed the score, the error, the confidence bounds
+   and the percentiles; the reader repeats them with the harness's own unit. A score labelled `MEAN`
+   would claim RepoPilot had averaged something it never saw, so `MeasurementAggregation` gained the
+   value that means "not mine".
+2. **`"NaN"` is a string, and a missing error is not a zero.** A single-fork rate benchmark writes
+   `"scoreError": "NaN"`; storing `0.0` would be the strongest precision claim a measurement can
+   make. No row is written, and the provenance counts the entries that lack an estimate.
+3. **The one check is internal to the file.** Where `rawData` exists, the stated score is compared
+   with the mean of the per-iteration values (flattened across forks) and the outcome becomes the
+   row's `check` attribute. Sample-mode entries record a histogram and say `not checkable`. The check
+   stores no second number and corrects nothing.
+4. **The command line is counted, never carried.** `jvmArgs` is where a `-D` credential lives; the
+   JVM binary path is not read at all. Declared parameters are stored, because they identify the
+   measurement rather than describe the machine.
+5. **There is no comparison, so there is no regression view.** `produced.comparisonsMade` is `false`,
+   the scoring rows carry a `note` saying one run on one machine says nothing about faster or slower,
+   and no threshold or severity exists to assign.
+6. **An array that is not a result file fails in the job.** Upload cannot tell one array from another;
+   the reader can, and its message names the entry and the field it lacked rather than storing an
+   empty run.
+
+### Retention: what a purge removes
+
+Retention is the only deletion path bounded by age, and it is bounded on purpose to the bytes:
+
+```text
+GET  /repositories/{id}/runtime/retention[?days=N]     ← computed live; reading the plan is the dry run
+POST /repositories/{id}/runtime/retention/purge        ← {"olderThanDays": N}, a job
+  ▼
+job row (ARTIFACT_RETENTION, QUEUED)                   ← excluded from the one-job-per-repository guard
+  ▼
+ArtifactRetentionJobHandler
+  │  1. resolve the window (parameter; ≤ 0 is refused before anything runs)
+  │  2. list candidates: artefacts past the cutoff whose file is still present
+  │  3. delete each file, then mark its row purged_at       ← this order, so a failure is visible
+  │  4. summary: files purged, bytes reclaimed, measurements kept
+  ▼
+no analysis_run: nothing was read
+```
+
+1. **Rows and measurements survive; only the file goes.** `runtime_artifact.purged_at` marks the row,
+   the run and every measurement stay, and the API reports `purgedAt` so the UI can render "file
+   purged" instead of an error.
+2. **Zero means off.** With `repopilot.storage.retention-days = 0` the scheduler queues nothing and
+   the plan names no candidate; an explicit purge with no window is a `400` that says it will not
+   treat a missing window as everything.
+3. **Re-upload restores.** Storage is content-addressed and unique per `(repositoryId, contentHash)`,
+   so uploading the same bytes writes the file again and clears the mark. Analysing a purged artefact
+   before that is a `409`, not a job that fails on a missing file.
+4. **The scheduler only queues.** One hourly pass, initial delay 120 s, idempotency key
+   `retention:<repoId>:<yyyy-MM-dd>`, per-repository `try`/`catch`, and the window written into the
+   job's parameters so the pass records the policy it ran under.
+
 ---
 
 ## 8. Data model
@@ -527,7 +609,9 @@ so migrations stay additive. Key tables:
   "0 findings, all clear".
 - `runtime_artifact` stores an uploaded recording or dump by content hash, together with the
   client's filename (a display label, never a path), its type, whether this build can read it,
-  and the provenance JSON of the recording's environment.
+  and the provenance JSON of the recording's environment. `V5__artifact_retention.sql` adds
+  `purged_at`: the row outlives the file, so a retention pass leaves a visible artefact whose
+  measurements are still queryable rather than a hole where a file used to be.
 - `runtime_measurement` (`V4__runtime_measurement.sql`) is one measured quantity: `metric_key`,
   `metric_kind`, `aggregation`, `metric_value`, `unit`, `sample_count`, `scope`,
   `attributes_json`, and the run and artefact it came from. It has no severity column, by design.
@@ -542,7 +626,10 @@ so migrations stay additive. Key tables:
 - `investigation`, `investigation_evidence`, `investigation_message` model the AI
   investigation and the exact evidence handed to or cited by the model.
 - `recommendation` holds a proposed patch; it is never applied automatically.
-- `benchmark_run` stores performance results as measurements with environment metadata.
+- `benchmark_run` is **unused**: benchmark results are stored as `runtime_measurement` rows under
+  the `benchmark.` namespace, like every other reader's output, so one measurements table answers
+  "what did this run record" regardless of which reader produced it. The table is kept because the
+  migration is additive, not because a second path is planned.
 - `code_embedding` is optional and off by default; `model_configuration` and `audit_event`
   support provider settings and traceability.
 
@@ -602,18 +689,19 @@ What has actually been run against this snapshot, and what has not:
 
 | Area | Status |
 | --- | --- |
-| Backend test suite | 128 tests, all passing (JUnit 5, H2 for the `local` profile, real Spring contexts) |
-| Frontend | `tsc --noEmit` clean under strict settings; production build succeeds (117 modules, 349.15 kB JS / 102.60 kB gzip) |
-| Live end-to-end | Indexing, Code Explorer (including findings), Dependency Graph, Performance Lab, Concurrency Inspector, Memory Analysis, Analysis History, Settings and the command palette exercised against a running backend on Windows |
-| Smoke test | 257 checks against a live server, 0 failures (readiness, registration, indexing, code intelligence, static analysis, the finding evidence contract, runtime evidence from three readers including all of their refusals, a real thread dump and a real 179 MB heap dump taken from the backend under test, and — when the data directory is known — six checks that inspect the artefact store on disk) |
+| Backend test suite | 183 tests, 28 classes, all passing (JUnit 5, H2 for the `local` profile, real Spring contexts) |
+| Frontend | `tsc --noEmit` clean under strict settings; production build succeeds (117 modules, 358.03 kB JS / 104.89 kB gzip) |
+| Live end-to-end | Indexing, Code Explorer (including findings), Dependency Graph, Performance Lab, Concurrency Inspector, Memory Analysis, Analysis History, Settings (including artefact retention) and the command palette exercised against a running backend on Windows |
+| Smoke test | 311 checks against a live server, 0 failures (readiness, registration, indexing, code intelligence, static analysis, the finding evidence contract, runtime evidence from four readers including all of their refusals, a real thread dump and a real 179 MB heap dump taken from the backend under test, a recorded two-fork JMH result, the retention plan and the refusals around it, and — when the data directory is known — six checks that inspect the artefact store on disk) |
 | Benchmark corpus | 3 002 Java files indexed (16 205 symbols, 105 001 references) and analysed in 118 s for 600 findings; spans recorded in [`corpus/RESULTS.md`](../corpus/RESULTS.md) |
 | Static analysis | **Verified.** Built-in rules and PMD run as a durable job; every stored finding passed its citation check; filters, tallies, run scoping and append-only re-runs asserted in the smoke test and the integration test |
 | Runtime evidence (JFR) | **Verified.** A live recording was uploaded, stored by hash, read by a durable job and queried back: 101 measurements with units, kinds, reductions and provenance. Refusals (bad header, unreadable type, pathological filename, both upload limits), deduplication, reproducibility and the removal of a deleted repository's bytes are asserted in the smoke test (69 new checks) and `RuntimeAnalysisIntegrationTest` / `RuntimeUploadLimitIntegrationTest` |
 | Runtime evidence (thread dumps) | **Verified.** Two real dumps of live JVMs (taken with `jcmd`, one of them re-encoded as UTF-16 by a Windows shell) were uploaded, stored by hash, read by a durable job and queried back: 11 and 17 measurements with their states, contention and the JVM's own deadlock verdict. The two `Thread.dump_to_file` formats are refused by name at upload, and the cross-reader "newest runtime evidence" query is asserted in the smoke test and `ThreadDumpAnalysisIntegrationTest` |
+| Runtime evidence (benchmark results) | **Verified.** Two real JMH runs (one fork and two forks, 14 entries each, three modes, a two-valued parameter) were uploaded, stored by hash, imported by a durable job and queried back: 254 and 277 measurements, every value `AS_REPORTED` with the harness's own unit, the score checked against the 6 recorded per-iteration values where the file has them and `NOT_CHECKABLE` where it does not, `jvmArgs` counted and not stored, no baseline and no comparison. A JSON array that is not a result file uploads and then fails naming the missing field; CSV and text output are refused at upload with the command that produces a readable file. Asserted in `BenchmarkImportIntegrationTest`, three unit-test classes and the smoke test |
 | SpotBugs | **Not implemented.** Needs bytecode; `compiledClassesPresent` is recorded per revision so it will report *not applicable* rather than a pass |
 | Runtime evidence (heap dumps) | **Verified.** Two real HPROF dumps (a purpose-built 10 MB subject and a 179 MB `GC.heap_dump` of this backend taken by the smoke test) were uploaded, stored by hash, read by a durable job and queried back: 61 measurements per dump, with the census, the `TOP_N = 20` type tables, the GC-root kinds and the largest single object. Object counts for `byte[]` and `java.lang.String` agree exactly with `jcmd GC.class_histogram`; the byte figures deliberately do not, and every byte row carries its basis. A class histogram, a gzip stream and a thread dump are refused by name at upload. The census arithmetic, the basis on every byte row and the cross-reader "newest runtime evidence" query are asserted in the smoke test (73 checks) and `HeapDumpAnalysisIntegrationTest` |
-| Benchmark import, AI investigation | **Not implemented.** Job types are declared; submitting one returns `UNSUPPORTED_INPUT`. A benchmark result is accepted and stored, then refused by name |
-| Age-based artefact retention | **Not implemented.** `ARTIFACT_RETENTION` has no handler; artefacts are reclaimed by deleting their repository |
+| AI investigation | **Not implemented.** The job type is declared; submitting it returns `UNSUPPORTED_INPUT` |
+| Age-based artefact retention | **Verified.** A pass removes the stored file of an artefact past the window and marks the row; the run and every measurement are kept. The plan is computed live (candidates, bytes, measurements kept), a zero-day window is refused with `400 VALIDATION_FAILED`, a window that nothing is past reports "Nothing to purge", re-uploading the same bytes clears `purged_at`, and analysing a purged artefact is a `409`. The scheduler queues one pass per repository per day and skips repositories with active jobs. Asserted in `ArtifactRetentionIntegrationTest`, `RetentionSchedulerTest` and the smoke test |
 | PostgreSQL | **Not verified.** Migrations are written to be portable and are exercised on H2 in PostgreSQL-compatibility mode only |
 | `docker compose up --build` | **Not verified.** There is no Docker daemon in the environment this snapshot was built in; the images and Compose file are written and reviewed but never executed |
 

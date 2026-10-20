@@ -18,6 +18,7 @@ import type {
   OverviewView,
   PageResponse,
   RepositorySummary,
+  RetentionPlan,
   RevisionLookup,
   RuntimeArtifactType,
   RuntimeArtifactView,
@@ -399,6 +400,31 @@ export const api = {
     request<RuntimeSummaryView>(
       `${API}/repositories/${repositoryId}/runtime/summary${query({ runId })}`,
       { signal },
+    ),
+
+  /**
+   * What a retention pass would remove. A read, not a job: the plan is computed against the current
+   * clock every time it is asked for, so there is nothing to schedule and nothing that can go stale.
+   *
+   * `days` previews a window other than the configured one. Absent means the configured window, and
+   * zero means pruning is off, which reports the repository and names no candidate.
+   */
+  retentionPlan: (repositoryId: Uuid, days?: number, signal?: AbortSignal) =>
+    request<RetentionPlan>(
+      `${API}/repositories/${repositoryId}/runtime/retention${query({ days })}`,
+      { signal },
+    ),
+
+  /**
+   * Queues a purge of the stored bytes of artefacts older than `olderThanDays`.
+   *
+   * A job rather than an inline delete, so the pass is visible in the job list with the window it ran
+   * under. The measurements are not touched by it.
+   */
+  purgeRetention: (repositoryId: Uuid, olderThanDays: number, signal?: AbortSignal) =>
+    request<JobView>(
+      `${API}/repositories/${repositoryId}/runtime/retention/purge`,
+      { method: "POST", body: { olderThanDays }, signal },
     ),
 
   // ---- jobs ----

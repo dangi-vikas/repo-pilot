@@ -2,14 +2,19 @@ package dev.repopilot.runtime;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.repopilot.config.RepoPilotProperties;
 import dev.repopilot.jobs.JobService;
+import dev.repopilot.jobs.JobType;
 import dev.repopilot.repository.RepositoryService;
 import dev.repopilot.repository.RepositorySummary;
 import dev.repopilot.runtime.query.RuntimeArtifactView;
+import dev.repopilot.runtime.benchmark.BenchmarkFormat;
+import dev.repopilot.runtime.benchmark.BenchmarkReader;
 import dev.repopilot.runtime.heapdump.HeapDumpFormat;
 import dev.repopilot.runtime.heapdump.HeapDumpReader;
 import dev.repopilot.runtime.jfr.JfrReader;
+import dev.repopilot.runtime.retention.ArtifactRetentionJobHandler;
 import dev.repopilot.runtime.threaddump.ThreadDumpFormat;
 import dev.repopilot.runtime.threaddump.ThreadDumpReader;
 import dev.repopilot.shared.error.ErrorCode;
@@ -47,7 +52,11 @@ import java.util.UUID;
  *       states in it would produce a report that looks like a healthy JVM. A heap dump has to begin
  *       with the {@code HPROF} header, and the file that is refused most usefully is the one an
  *       operator is most likely to have collected by mistake: {@code jmap -histo} output, which is
- *       a summary the JVM printed rather than a dump of anything.</li>
+ *       a summary the JVM printed rather than a dump of anything. A benchmark result has no header to
+ *       check at all, because JSON has none: that check is weaker by necessity — the file has to open
+ *       with an array — and {@code BenchmarkReader} is where the structural check that can name the
+ *       wrong entry lives. What is refused here is the shape decidable from the first byte, which
+ *       includes the two other output formats JMH can write and a gzip archive.</li>
  *   <li><b>Size is bounded, twice.</b> The outer bound is WebFlux's
  *       {@code spring.webflux.multipart.max-disk-usage-per-part}, enforced while the part is being
  *       written, so an oversized stream stops at a bounded number of bytes on disk instead of at
@@ -87,6 +96,12 @@ public class RuntimeService {
      */
     private final long maxArtifactBytes;
 
+    /** Largest benchmark result accepted, in bytes, checked at upload before any parsing happens. */
+    private final long maxBenchmarkBytes;
+
+    /** The configuration, kept because the retention endpoints read the configured window from it. */
+    private final RepoPilotProperties properties;
+
     public RuntimeService(RepositoryService repositories,
                           RuntimeArtifactRepository artifacts,
                           RuntimeMeasurementRepository measurements,
@@ -100,7 +115,9 @@ public class RuntimeService {
         this.store = store;
         this.jobs = jobs;
         this.json = json;
+        this.properties = properties;
         this.maxArtifactBytes = properties.analysis().maxArtifactSizeBytes();
+        this.maxBenchmarkBytes = properties.analysis().maxBenchmarkResultBytes();
     }
 
     /** The limit this instance applies, so a caller can state it rather than restate it. */
@@ -157,6 +174,13 @@ public class RuntimeService {
                             staged.repositoryId(), stored.contentHash())
                     .orElseGet(() -> artifacts.save(new RuntimeArtifact(staged.repositoryId(), staged.type(),
                             staged.filename(), stored.contentHash(), stored.sizeBytes(), stored.storageRef())));
+            if (artifact.isPurged()) {
+                // The same bytes, uploaded again. Storage is content-addressed, so the file is back at
+                // exactly the path this row names, and the row must stop claiming it is gone rather than
+                // accumulate a second row for one file.
+                artifact.markStored();
+                artifact = artifacts.save(artifact);
+            }
             return RuntimeArtifactView.from(artifact, measurements.countByArtifactId(artifact.getId()));
         } catch (IOException | RuntimeException e) {
             // Nothing partial is ever stored, and the scratch file is not left for the next
@@ -182,7 +206,15 @@ public class RuntimeService {
         if (!type.supported()) {
             throw RepoPilotException.unsupported(type.unsupportedReason());
         }
-        if (jobs.countActiveForRepository(repositoryId) > 0) {
+        if (artifact.isPurged()) {
+            // The bytes are gone but the row, the run it produced and its measurements are not. Saying
+            // so is the only honest answer: re-queuing the job would fail deeper in with a missing file,
+            // and the operator can fix this by uploading the same file again.
+            throw RepoPilotException.conflict("The stored file for this artefact was removed by retention, so "
+                    + "there is nothing left to read. Its measurements are still here. Upload the file again to "
+                    + "analyse it.");
+        }
+        if (jobs.countActiveAnalysisForRepository(repositoryId) > 0) {
             throw RepoPilotException.conflict(
                     "This repository already has a job in progress. Wait for it to finish before analysing.");
         }
@@ -207,6 +239,39 @@ public class RuntimeService {
      */
     public int discardArtifacts(UUID repositoryId) {
         return store.discardRepository(repositoryId);
+    }
+
+    /**
+     * Queues a retention pass for a repository.
+     *
+     * <p>The window is the configured one unless the caller names another, and it is written into the
+     * job's parameters either way: a job that says what it was asked to do is worth more than one that
+     * has to be read against configuration that may have changed since.
+     *
+     * <p>Nothing is refused for lack of a window when a pass is already queued. Two passes are harmless
+     * — the second finds the files gone and says so — and refusing one would mean an operator who
+     * uploaded an old file and asked to purge it again gets an error instead of a no-op. What is
+     * refused is a pass that would have no window at all, because "purge everything" is not a policy
+     * this endpoint is allowed to infer.
+     */
+    public JobService.Submission submitRetention(UUID repositoryId, Integer olderThanDays, String idempotencyKey) {
+        RepositorySummary repository = repositories.require(repositoryId);
+        int days = olderThanDays == null ? properties.storage().retentionDays() : olderThanDays;
+        if (days <= 0) {
+            throw RepoPilotException.validation("Retention cannot run with a window of " + days + " day(s). "
+                    + "Automatic pruning is switched off (repopilot.storage.retention-days=0), so this "
+                    + "request has to name the window it wants, and a pass that would remove every stored "
+                    + "file is not something this endpoint will do by omission.");
+        }
+        ObjectNode parameters = json.createObjectNode();
+        parameters.put(ArtifactRetentionJobHandler.OLDER_THAN_DAYS, days);
+        try {
+            return jobs.submit(JobType.ARTIFACT_RETENTION, repository.workspaceId(), repositoryId,
+                    json.writeValueAsString(parameters), idempotencyKey);
+        } catch (JsonProcessingException e) {
+            throw new RepoPilotException(ErrorCode.INTERNAL_ERROR,
+                    "Could not serialise retention job parameters", e);
+        }
     }
 
     /**
@@ -252,15 +317,37 @@ public class RuntimeService {
     }
 
     /** A cheap header check, so an obvious mismatch is refused before a job is spent on it. */
-    private static void verifyLooksLike(Path file, RuntimeArtifactType type) throws IOException {
+    private void verifyLooksLike(Path file, RuntimeArtifactType type) throws IOException {
         switch (type) {
             case JFR_RECORDING -> verifyRecording(file);
             case HEAP_DUMP -> verifyHeapDump(file);
             case THREAD_DUMP -> verifyThreadDump(file);
-            // The remaining type is stored unread: a benchmark result this build cannot import is
-            // still evidence the operator collected, and refusing it would lose it.
-            case BENCHMARK_RESULT -> {
-            }
+            case BENCHMARK_RESULT -> verifyBenchmarkResult(file);
+        }
+    }
+
+    /**
+     * Refuses a benchmark result this build cannot import, at upload rather than at analysis.
+     *
+     * <p>Two checks, and the weaker one is the format. JMH's CSV and text outputs both contain the
+     * score, which is exactly what makes them dangerous: a score rounded by a display formatter looks
+     * like a score, and neither carries the per-iteration values a score can be checked against. They
+     * are refused by name with the flag that produces the readable form.
+     *
+     * <p>The size check is here rather than only in the analysis job because a result file is parsed
+     * into memory, entry by entry, whereas a dump is streamed. A file over the limit is refused with
+     * both numbers stated, so the operator can see which configuration to change.
+     */
+    private void verifyBenchmarkResult(Path file) throws IOException {
+        long size = Files.size(file);
+        if (size > maxBenchmarkBytes) {
+            throw RepoPilotException.limitExceeded("The uploaded benchmark result is " + size
+                    + " bytes; the limit is " + maxBenchmarkBytes + " bytes"
+                    + " (repopilot.analysis.max-benchmark-result-bytes).");
+        }
+        BenchmarkFormat format = BenchmarkReader.detect(file);
+        if (!format.readable()) {
+            throw RepoPilotException.unsupported(BenchmarkFormat.explain(format));
         }
     }
 

@@ -53,7 +53,7 @@ export const DESTINATIONS: Destination[] = [
     label: "Performance Lab",
     icon: "gauge",
     section: "Performance",
-    description: "JFR recordings and benchmark results, measured — not guessed.",
+    description: "JFR recordings, heap and thread dumps, and JMH result files — measured, not guessed.",
     available: true,
   },
   {
@@ -98,7 +98,7 @@ export const DESTINATIONS: Destination[] = [
     label: "Settings",
     icon: "settings",
     section: "Operations",
-    description: "Connection, workspace roots, AI provider and privacy controls.",
+    description: "Connection, workspace roots, AI provider, retention and privacy controls.",
     available: true,
   },
 ];

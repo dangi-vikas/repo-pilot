@@ -128,6 +128,13 @@ public record RepoPilotProperties(
             @DefaultValue("2000000") int maxJfrEvents,
             /** Maximum size of an uploaded runtime artefact. */
             @DefaultValue("1073741824") long maxArtifactSizeBytes,
+            /**
+             * Maximum size of a benchmark result file, checked at upload. Smaller than the artefact
+             * limit because a result file is a document that is parsed into memory one entry at a
+             * time, whereas a dump is streamed: a JMH result of this size is already an unusually
+             * large suite, and the refusal names this limit rather than failing later on a heap.
+             */
+            @DefaultValue("67108864") long maxBenchmarkResultBytes,
             /** JVM heap cap hint for isolated heap-dump processing (bytes). Informational. */
             @DefaultValue("2147483648") long heapDumpProcessingBudgetBytes
     ) {
@@ -139,8 +146,32 @@ public record RepoPilotProperties(
             @DefaultValue("./data") String dataDir,
             /** Directory for uploaded runtime artefacts (JFR, dumps, benchmark JSON). */
             @DefaultValue("artifacts") String artifactsDir,
-            /** Delete artefacts and runs older than this many days. 0 disables automatic pruning. */
+            /**
+             * Purge the stored bytes of runtime artefacts older than this many days. 0 disables
+             * automatic pruning.
+             *
+             * <p>What is purged is the file, not the record: the artefact row, its run and every
+             * measurement that came out of it are kept, because the measurements are the only copy of
+             * the evidence once the bytes are gone. See docs/adr/0012 for why deleting the run as well
+             * would destroy evidence rather than reclaim space.
+             */
             @DefaultValue("30") int retentionDays,
+            /**
+             * How often the scheduler looks for repositories due a retention pass (milliseconds).
+             *
+             * <p>Frequent and cheap: the sweep only decides whether a pass is due, and a pass is due at
+             * most once a day because the job it submits carries the date in its idempotency key. Hourly
+             * means a pass missed because the process was down at midnight happens soon after startup.
+             */
+            @DefaultValue("3600000") long retentionSweepIntervalMillis,
+            /**
+             * How long after startup the first retention sweep runs (milliseconds).
+             *
+             * <p>Not zero: a start should finish its recovery and let the UI come up before deciding to
+             * delete files, and a maintenance pass is never urgent enough to be the first thing that
+             * happens.
+             */
+            @DefaultValue("120000") long retentionInitialDelayMillis,
             /** Delete abandoned temporary extraction directories on startup. */
             @DefaultValue("true") boolean cleanupTempOnStartup
     ) {

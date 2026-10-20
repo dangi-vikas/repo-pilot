@@ -10,6 +10,7 @@ import dev.repopilot.runtime.query.RuntimeMeasurementFilter;
 import dev.repopilot.runtime.query.RuntimeMeasurementView;
 import dev.repopilot.runtime.query.RuntimeQueryService;
 import dev.repopilot.runtime.query.RuntimeSummaryView;
+import dev.repopilot.runtime.retention.ArtifactRetentionService;
 import dev.repopilot.shared.reactive.Blocking;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
@@ -50,14 +51,30 @@ public class RuntimeController {
 
     private final RuntimeService runtime;
     private final RuntimeQueryService queries;
+    private final ArtifactRetentionService retention;
 
-    public RuntimeController(RuntimeService runtime, RuntimeQueryService queries) {
+    public RuntimeController(RuntimeService runtime, RuntimeQueryService queries,
+                             ArtifactRetentionService retention) {
         this.runtime = runtime;
         this.queries = queries;
+        this.retention = retention;
     }
 
     /** Request body for queueing an artefact's analysis. */
     public record SubmitArtifactAnalysisRequest(
+            @Size(max = 200, message = "idempotencyKey must be at most 200 characters")
+            String idempotencyKey
+    ) {
+    }
+
+    /**
+     * Request body for queueing a retention pass.
+     *
+     * @param olderThanDays apply this window instead of the configured one; absent means the
+     *                      configured window, and zero is refused rather than read as "everything"
+     */
+    public record PurgeRetentionRequest(
+            Integer olderThanDays,
             @Size(max = 200, message = "idempotencyKey must be at most 200 characters")
             String idempotencyKey
     ) {
@@ -161,5 +178,40 @@ public class RuntimeController {
     public Mono<RuntimeSummaryView> summary(@PathVariable UUID repositoryId,
                                             @RequestParam(required = false) UUID runId) {
         return Blocking.deferOffload(() -> queries.summary(repositoryId, runId));
+    }
+
+    /**
+     * What artefact retention holds for a repository, and what a pass would remove now.
+     *
+     * <p>A read, not a dry run: the plan is computed against the current clock every time it is asked
+     * for, so there is nothing to schedule and nothing that can go stale. The candidate list states, per
+     * file, how many measurements would survive it, because the answer to "may I delete this" depends on
+     * that number and not on the bytes.
+     *
+     * @param days preview this window instead of the configured one; absent means the configured window,
+     *             and zero means "pruning is off", which reports the repository and names no candidate
+     */
+    @GetMapping("/{repositoryId}/runtime/retention")
+    public Mono<ArtifactRetentionService.RetentionPlan> retention(@PathVariable UUID repositoryId,
+                                                                 @RequestParam(required = false) Integer days) {
+        return Blocking.deferOffload(() -> days == null ? retention.plan(repositoryId) : retention.plan(repositoryId, days));
+    }
+
+    /**
+     * Queues a retention pass.
+     *
+     * <p>Accepted, not performed, for the same reason analysis is: the work is durable, cancellable and
+     * visible in the job list, and a request that deleted files synchronously would have to hold a
+     * connection open while it did.
+     */
+    @PostMapping("/{repositoryId}/runtime/retention/purge")
+    public Mono<ResponseEntity<JobView>> purge(@PathVariable UUID repositoryId,
+                                               @Valid @RequestBody(required = false) PurgeRetentionRequest request) {
+        return Blocking.deferOffload(() -> {
+            Integer days = request == null ? null : request.olderThanDays();
+            String key = request == null ? null : request.idempotencyKey();
+            JobService.Submission submission = runtime.submitRetention(repositoryId, days, key);
+            return JobView.from(submission.job());
+        }).map(view -> ResponseEntity.status(HttpStatus.ACCEPTED).body(view));
     }
 }

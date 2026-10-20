@@ -25,6 +25,14 @@ public class JobService {
 
     private static final Logger log = LoggerFactory.getLogger(JobService.class);
 
+    /**
+     * Job types that are housekeeping rather than work somebody asked for.
+     *
+     * <p>They are excluded from the per-repository activity guard, because a guard exists to stop two
+     * heavy passes fighting over one repository, not to let a scheduled tidy-up block a user.
+     */
+    private static final List<JobType> MAINTENANCE_TYPES = List.of(JobType.ARTIFACT_RETENTION);
+
     private final AnalysisJobRepository jobs;
     private final JobRegistry registry;
 
@@ -130,6 +138,21 @@ public class JobService {
     public long countActiveForRepository(UUID repositoryId) {
         return jobs.countByRepositoryIdAndStatusIn(repositoryId,
                 List.copyOf(EnumSet.of(JobStatus.QUEUED, JobStatus.RUNNING)));
+    }
+
+    /**
+     * The same count, without the jobs that are housekeeping rather than work a user asked for.
+     *
+     * <p>Retention is submitted by a scheduler, not by anybody watching a spinner, and it is queued at
+     * the lowest priority so that it runs when nothing else wants the repository. Counting it as
+     * activity would invert that: the maintenance pass would hold the repository and refuse the
+     * analysis that was supposed to go first. See {@code ArtifactRetentionJobHandler}.
+     */
+    @Transactional(readOnly = true)
+    public long countActiveAnalysisForRepository(UUID repositoryId) {
+        return jobs.countByRepositoryIdAndStatusInAndJobTypeNotIn(repositoryId,
+                List.copyOf(EnumSet.of(JobStatus.QUEUED, JobStatus.RUNNING)),
+                MAINTENANCE_TYPES);
     }
 
     @Transactional(readOnly = true)

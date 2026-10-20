@@ -164,6 +164,54 @@ public class ArtifactStore {
         return removed;
     }
 
+    /**
+     * Removes one stored artefact's bytes.
+     *
+     * <p>Different from {@link #discardRepository} in the two ways that matter to a retention pass.
+     * It is scoped to a single content-addressed file rather than to everything a repository owns,
+     * because purging an old artefact must not touch the ones the operator is still working with. And
+     * a file that is already gone is not an error: a pass that stopped because a previous pass had
+     * already removed one file would be unrunnable, and the row is marked purged either way, so the
+     * absence is self-healing rather than a failure.
+     *
+     * <p>The containment checks are the same ones {@link #resolve} makes, and for the same reason: a
+     * {@code storage_ref} comes from a database row, and a path from a database row is input like any
+     * other. The difference is that a reference which resolves outside the artefact directory is still
+     * a hard refusal here rather than a not-found, because this method deletes.
+     *
+     * @return whether a file was actually removed
+     */
+    public boolean discard(String storageRef) {
+        if (storageRef == null || storageRef.isBlank()) {
+            throw RepoPilotException.validation("The artefact has no stored location.");
+        }
+        Path candidate = artifactsDirectory.resolve(storageRef).normalize();
+        if (!candidate.startsWith(artifactsDirectory)) {
+            throw RepoPilotException.pathRejected(
+                    "Artefact reference " + storageRef + " resolves outside the artefact directory.");
+        }
+        if (!Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)) {
+            return false;
+        }
+        try {
+            Path realRoot = artifactsDirectory.toRealPath();
+            Path realParent = candidate.toRealPath().getParent();
+            if (realParent == null || !realParent.startsWith(realRoot)) {
+                throw RepoPilotException.pathRejected(
+                        "Artefact reference " + storageRef + " resolves to a link outside the artefact directory.");
+            }
+        } catch (IOException vanished) {
+            // The file disappeared between the existence check and the resolution. Nothing to do.
+            return false;
+        }
+        try {
+            return Files.deleteIfExists(candidate);
+        } catch (IOException e) {
+            log.warn("could not delete artefact file {}: {}", candidate, e.getMessage());
+            return false;
+        }
+    }
+
     private static Optional<UUID> parseUuid(String value) {
         try {
             return Optional.of(UUID.fromString(value));

@@ -78,7 +78,7 @@ public class AnalysisController {
                 throw RepoPilotException.conflict(
                         "This repository has not been indexed yet. Run an index job before analysing it.");
             }
-            if (jobs.countActiveForRepository(repositoryId) > 0) {
+            if (jobs.countActiveAnalysisForRepository(repositoryId) > 0) {
                 throw RepoPilotException.conflict(
                         "This repository already has a job in progress. Wait for it to finish before analysing.");
             }

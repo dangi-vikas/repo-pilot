@@ -91,9 +91,11 @@ artefact that produced them, and RepoPilot applies no thresholds to them.**
    Refusing the upload would discard evidence the operator already collected; accepting and
    pretending to analyse it would be worse. A request that cannot start fails *before* any run
    row exists, so there is never a run that failed for a reason the API could have stated.
-   *(Amended: heap dumps and thread dumps have since been given readers — ADR 0009, ADR 0010.
-   A benchmark result is the remaining type that is stored unread, and it is the one this
-   decision now covers in practice.)*
+   *(Amended: heap dumps and thread dumps have since been given readers — ADR 0009, ADR 0010 —
+   and benchmark results a third — ADR 0011. **No type in `RuntimeArtifactType` is stored unread any
+   more**, so this decision now has no instance; the mechanism stays for a format a future build does
+   not read, and the contract it enforced is checked as "unknown type is a 400, known type with the
+   wrong bytes is a 422". See the amendment at the end of this ADR.)*
 
 10. **Uploads are streamed, not buffered.** The multipart part is written to a scratch file,
     hashed on a second pass, and moved into place with `ATOMIC_MOVE`. Peak memory is one hash
@@ -137,3 +139,28 @@ artefact that produced them, and RepoPilot applies no thresholds to them.**
   *(Amended: both now exist — a thread dump in ADR 0009 and a heap dump in ADR 0010 — and both kept
   this contract. Neither produces a finding: a heap dump's byte figures are measurements with a
   provenance rather than severities, and it computes no retained size at all.)*
+
+## Amendment (2026-10-20): the fourth reader, and what may be removed
+
+**Every artefact type now has a reader, and a retention pass may remove the bytes of one without
+removing what was derived from it.**
+
+- **Decision 9 has no instance left.** `BENCHMARK_RESULT` was the last type that was stored unread;
+  ADR 0011 gives it a reader. The mechanism stays — `supported`/`unsupportedReason` is how the API
+  answers for a format a build does not read — but no member of `RuntimeArtifactType` is unread today,
+  so the Phase 3 smoke checks that asserted the "stored, unread" contract were retired rather than left
+  passing on a type that no longer exists. What remains asserted is the pair the mechanism is for: an
+  unknown type is a `400`, and a known type carrying the wrong bytes is a `422` naming the format.
+- **`MeasurementAggregation` gained `AS_REPORTED`.** This ADR's contract says an aggregation describes
+  how observations were reduced. A benchmark score was not reduced by RepoPilot at all — it was
+  computed by the harness — so the honest label is "as reported", and a quoted percentile keeps the
+  harness's own level in its key. Nothing else in the contract changed: same rows, same units, same
+  requirement that a value never travels without its reduction and its sample count.
+- **Retention is a property of the bytes, not of the evidence** (ADR 0012). A file past the window is
+  deleted and its row marked `purged_at`; the run and every measurement are kept, and the plan states
+  per file how many measurements survive. This is the one deletion path that is bounded by age; runs
+  are never deleted by a sweep, and there is still no per-artefact delete endpoint.
+- **Two more things are refused rather than inferred**, continuing the pattern of decision 9: a
+  retention window of zero (it means "off", not "everything") and a benchmark result that is not the
+  JSON array JMH writes (refused by name with the command that produces one).
+

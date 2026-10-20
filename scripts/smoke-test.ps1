@@ -49,6 +49,19 @@
     files an operator most often has instead — a class histogram, a gzipped dump and a thread
     dump — are each refused by name, with the command that produces a readable one.
 
+    Then benchmark results, where the reader computes nothing at all: the recorded two-fork JMH
+    run is uploaded, imported, and read back against the exact figures its file states. Every
+    value must be quoted rather than reduced, the file's own unit must survive, the command line
+    must be counted and not stored, and the other shapes JMH writes must be refused with the
+    command that produces the readable one. An array that is not a result file is stored and then
+    fails, naming the field it lacked, because JSON has no header to check at upload.
+
+    Then artefact retention: the plan must count what the repository holds, name no candidate on
+    a fresh server rather than showing a bare empty list, and refuse a zero-day window instead of
+    reading it as "everything". The deletion path itself - file gone, mark set, measurements kept,
+    re-upload restoring the artefact - needs a file older than the window and runs in
+    ArtifactRetentionIntegrationTest, which backdates created_at rather than waiting thirty days.
+
     When the data directory is known, it also checks the one thing the API cannot show:
     that deleting a repository removes the bytes it had stored, and leaves another
     repository's bytes alone. That check is skipped, loudly, when -DataDir is not given.
@@ -618,31 +631,17 @@ Assert-That ((Get-Prop $noRunYet "runId") -eq $null) `
     "the refused upload created no run at all"
 
 <#
-An artefact type this build cannot read is stored and reported as such, because throwing away evidence
-the operator already collected is worse than admitting the reader is not written.
-
-A benchmark result is that type now that a heap dump has a reader. It is a table of numbers the
-operator's own harness wrote, so it is stored unread — and it is deliberately not flagged as process
-memory, because a warning that is false where it is easy to check stops being read where it is not.
+There is no longer an artefact type this build stores and cannot read: all four have a reader. The
+mechanism survives — `supported` and `unsupportedReason` are how the API answers for a format a build
+does not read — but a check that asserted "stored, unread" would now have to invent a type, and an
+invented type is refused at the upload rather than stored. So what is asserted here is the pair that
+is still true: an unknown type is a bad request, and a known type carrying the wrong bytes is refused
+by name. The second is already proven twice above (a recording without a header, a heap dump without
+one); benchmarks prove it a third time in their own section below.
 #>
-$unreadable = Send-Artifact $repositoryId $notRecording "smoke-benchmark.json" "BENCHMARK_RESULT"
-Assert-That ($unreadable.Status -eq 201) "an artefact type this build cannot read is still stored"
-$unreadableArtifact = $unreadable.Body | ConvertFrom-Json
-Assert-That ($unreadableArtifact.supported -eq $false) "the unsupported artefact is reported as unreadable"
-Assert-That (-not [string]::IsNullOrWhiteSpace($unreadableArtifact.unsupportedReason)) `
-    "the unsupported artefact names the reason it cannot be read"
-Assert-That ($unreadableArtifact.containsProcessMemory -eq $false) `
-    "a benchmark result is not flagged as process memory"
-
-$unreadableAnalysis = Post-ExpectingFailure `
-    "$api/repositories/$repositoryId/runtime/artifacts/$($unreadableArtifact.id)/analyze" "{}"
-Assert-That ($unreadableAnalysis.Status -eq 422) `
-    "analysing an unreadable artefact is refused (was $($unreadableAnalysis.Status))"
-$unreadableRefusal = $unreadableAnalysis.Body | ConvertFrom-Json
-Assert-That ((Get-Prop $unreadableRefusal "errorCode") -eq "UNSUPPORTED_INPUT") `
-    "the refusal names the unsupported input"
-Assert-That ((Get-Prop $unreadableRefusal "message") -like "*not implemented*") `
-    "the refusal names the capability that is missing"
+$unknownType = Send-Artifact $repositoryId $notRecording "smoke-unknown.json" "NOT_A_RUNTIME_TYPE"
+Assert-That ($unknownType.Status -eq 400) `
+    "an artefact type the API does not know is a bad request (was $($unknownType.Status))"
 
 # Analyse the recording: a durable job, then a run.
 $runtimeJob = Post-Json "$api/repositories/$repositoryId/runtime/artifacts/$($artifact.id)/analyze" "{}"
@@ -1237,6 +1236,218 @@ if ($null -eq $jcmdPath) {
         Assert-That ($heapRowsAgain.totalItems -eq $heapRows.Count) `
             "a heap-dump run keeps its own measurements under its own run id"
     }
+}
+
+# ---------------------------------------------------------------- benchmarks
+Write-Host "`n== runtime evidence (benchmarks) ==" -ForegroundColor Cyan
+
+<#
+The file is the two-fork JMH run recorded for the unit tests, uploaded unchanged. Its provenance is
+corpus/benchmarks/README.md: JMH 1.37 on JDK 21.0.5, two forks of three iterations, and explicitly not
+a performance claim. Asserting its exact figures here is the point — the reader's job is to repeat a
+number it did not compute, so a live import must return the same number the file states.
+#>
+$benchmarkPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../backend/src/test/resources/benchmarks/jmh-result-2-forks.json"))
+$benchmarkArtifact = $null
+if (-not (Test-Path $benchmarkPath)) {
+    Write-Host "  SKIPPED: the recorded JMH fixture is not present at $benchmarkPath" -ForegroundColor Yellow
+    $skipped++
+} else {
+    # The type is inferred from the extension here, and stated nowhere: a `.json` upload that needs a
+    # query parameter to be recognised would mean the detection table is lying.
+    $benchmarkUpload = Send-Artifact $repositoryId $benchmarkPath "jmh-result-2-forks.json" ""
+    Assert-That ($benchmarkUpload.Status -eq 201) `
+        "a JMH result file uploads (was $($benchmarkUpload.Status))"
+    $benchmarkArtifact = $benchmarkUpload.Body | ConvertFrom-Json
+    Assert-That ($benchmarkArtifact.artifactType -eq "BENCHMARK_RESULT") `
+        "the type is inferred from the .json extension"
+    Assert-That ($benchmarkArtifact.supported -eq $true) "a benchmark result is reported as readable"
+    Assert-That ($benchmarkArtifact.containsProcessMemory -eq $false) `
+        "a benchmark result is not process memory and is not flagged as such"
+    Assert-That ((Get-Prop $benchmarkArtifact "purgedAt") -eq $null) `
+        "a freshly uploaded artefact has not been purged"
+
+    $benchmarkJob = Post-Json "$api/repositories/$repositoryId/runtime/artifacts/$($benchmarkArtifact.id)/analyze" "{}"
+    Assert-That ($benchmarkJob.jobType -eq "BENCHMARK_IMPORT") `
+        "a benchmark result is imported by its own job type"
+    $benchmarkFinal = Wait-ForJob $benchmarkJob.id 180
+    Assert-That ($benchmarkFinal.status -eq "SUCCEEDED") `
+        "the benchmark import succeeded (was $($benchmarkFinal.status))"
+    Write-Host ("  summary: {0}" -f $benchmarkFinal.resultSummary)
+    Assert-That ($benchmarkFinal.resultSummary -like "*277 measurement(s) from 14 benchmark result entries*") `
+        "the run read all 14 entries and produced 277 rows"
+    Assert-That ($benchmarkFinal.resultSummary -like "*4 in throughput mode*") `
+        "the summary counts the entries by mode"
+    Assert-That ($benchmarkFinal.resultSummary -like "*nothing compared with anything*") `
+        "the summary states that nothing was compared"
+    Assert-That ($benchmarkFinal.resultSummary -like "*no threshold applied*") `
+        "the summary states that no threshold was applied"
+    Assert-That ($benchmarkFinal.resultSummary -like "*no severity assigned*") `
+        "the summary states that no severity was assigned"
+
+    $benchmarkSummary = Get-Json "$api/repositories/$repositoryId/runtime/summary"
+    Assert-That ((Get-Prop $benchmarkSummary "runId") -eq $benchmarkFinal.analysisRunId) `
+        "the runtime summary now points at the benchmark run"
+    Assert-That ((Get-Prop $benchmarkSummary "artifactType") -eq "BENCHMARK_RESULT") `
+        "the summary names the kind of artefact the run read"
+
+    $benchmarkProvenance = Get-Prop $benchmarkSummary "provenanceJson"
+    Assert-That ($null -ne $benchmarkProvenance) "the result file's own facts are stored with the run"
+    $benchmarkProvenanceText = $benchmarkProvenance | ConvertTo-Json -Depth 10 -Compress
+    Assert-That ((Get-Prop (Get-Prop $benchmarkProvenance "environment") "jmhVersion") -eq "1.37") `
+        "the provenance records the harness version that wrote the file"
+    Assert-That ((Get-Prop (Get-Prop $benchmarkProvenance "benchmark") "entries") -eq 14) `
+        "the provenance records how many entries the file held"
+    Assert-That ((Get-Prop (Get-Prop $benchmarkProvenance "benchmark") "jvmArgumentsRecorded") -eq 0) `
+        "the provenance counts the JVM arguments rather than carrying them"
+    Assert-That ((Get-Prop (Get-Prop $benchmarkProvenance "produced") "comparisonsMade") -eq $false) `
+        "the provenance states that no comparison was made"
+    Assert-That ((Get-Prop (Get-Prop $benchmarkProvenance "produced") "thresholdsApplied") -eq $false) `
+        "the provenance states that no threshold was applied"
+
+    $benchmarkPage = Get-Json "$api/repositories/$repositoryId/runtime/measurements?metric=benchmark&size=500"
+    $benchmarkRows = @($benchmarkPage.items)
+    Assert-That ($benchmarkPage.totalItems -eq 277) `
+        "the API counts every row the run wrote ($($benchmarkPage.totalItems))"
+    Assert-That ($benchmarkPage.totalItems -gt $benchmarkRows.Count) `
+        "a run with more rows than one page states the total it sliced"
+    Assert-That (@($benchmarkRows | Where-Object { $_.metricKey -notlike "benchmark.*" }).Count -eq 0) `
+        "every measurement the filter returns is the benchmark reader's own"
+    Assert-That (@($benchmarkRows | Where-Object { [string]::IsNullOrWhiteSpace($_.unit) }).Count -eq 0) `
+        "every benchmark measurement states its unit"
+    Assert-That (@($benchmarkRows | Where-Object { $_.aggregation -notin @("AS_REPORTED", "COUNT") }).Count -eq 0) `
+        "no benchmark value claims a reduction RepoPilot did not perform"
+    Assert-That (@($benchmarkRows | Where-Object { $_.metricKey -like "*baseline*" -or $_.metricKey -like "*delta*" }).Count -eq 0) `
+        "no row names a baseline or a delta"
+
+    # One score, exactly as the file states it: throughput, size=16, 10.359395201829896 ops/us. The
+    # row must say who computed it and that nothing beside it confirms it.
+    $throughputRows = @((Get-Json "$api/repositories/$repositoryId/runtime/measurements?metric=benchmark.throughput&size=300").items)
+    $size16Scores = @($throughputRows | Where-Object {
+            $_.metricKey -eq "benchmark.throughput.score" -and (Get-Prop $_ "scope") -like "*size=16*"
+        })
+    Assert-That ($size16Scores.Count -eq 2) "one throughput score per method at size 16"
+    $mapLookup = @($size16Scores | Where-Object { (Get-Prop $_ "scope") -like "*mapLookup*" })[0]
+    # Compared with a tolerance because ConvertFrom-Json yields a decimal for a value with this many
+    # digits, and decimal-versus-double equality in PowerShell converts through a 15-digit string.
+    Assert-That ([math]::Abs([double]$mapLookup.value - [double]10.359395201829896) -lt 1e-9) `
+        "the score is the number the file states, not a recomputation ($($mapLookup.value))"
+    Assert-That ($mapLookup.unit -eq "ops/us") "the score keeps the harness's own unit"
+    Assert-That ($mapLookup.aggregation -eq "AS_REPORTED") "the score is recorded as quoted"
+    Assert-That ((Get-Prop $mapLookup "sampleCount") -eq 6) `
+        "the score states the six per-iteration values it was checked against"
+    Assert-That ((Get-Prop $mapLookup "attributesJson") -like "*quoted from the benchmark result file*") `
+        "the row says where the number came from"
+    Assert-That ((Get-Prop $mapLookup "attributesJson") -like "*No threshold was applied*") `
+        "the row repeats that no threshold was applied"
+
+    $benchmarkRow = @($benchmarkRows | Where-Object { $_.metricKey -eq "benchmark.file.entries" })[0]
+    Assert-That ($benchmarkRow.value -eq 14) "the file-level row counts the entries the file held"
+
+    # The other shapes JMH writes are refused by name, at upload, before a job is spent.
+    $csvPath = Join-Path $runtimeDir "results.csv"
+    [System.IO.File]::WriteAllText($csvPath,
+        "`"Benchmark`",`"Mode`",`"Threads`",`"Score`",`"Unit`"`n`"fixture.mapLookup`",thrpt,1,9.86,ops/us`n",
+        (New-Object System.Text.UTF8Encoding($false)))
+    $csvRefusal = Send-Artifact $repositoryId $csvPath "results.csv" "BENCHMARK_RESULT"
+    Assert-That ($csvRefusal.Status -eq 422) `
+        "the CSV output is refused (was $($csvRefusal.Status))"
+    $csvError = $csvRefusal.Body | ConvertFrom-Json
+    Assert-That ((Get-Prop $csvError "errorCode") -eq "UNSUPPORTED_INPUT") `
+        "the CSV refusal carries a stable error code"
+    Assert-That ((Get-Prop $csvError "message") -like "*-rf json*") `
+        "the refusal names the command that produces a readable file"
+
+    $objectPath = Join-Path $runtimeDir "one-result.json"
+    [System.IO.File]::WriteAllText($objectPath, '{"benchmark":"fixture.mapLookup"}',
+        (New-Object System.Text.UTF8Encoding($false)))
+    $objectRefusal = Send-Artifact $repositoryId $objectPath "one-result.json" "BENCHMARK_RESULT"
+    Assert-That ($objectRefusal.Status -eq 422) `
+        "a single JSON object is refused (was $($objectRefusal.Status))"
+    $objectError = $objectRefusal.Body | ConvertFrom-Json
+    Assert-That ((Get-Prop $objectError "message") -like "*array*") `
+        "the refusal says the file must be the array JMH writes"
+
+    # An array that is not a result file is stored and then fails, because JSON has no header to check
+    # and the shape is only knowable once it is parsed. The failure must say what was missing.
+    $wrongArrayPath = Join-Path $runtimeDir "not-a-result.json"
+    [System.IO.File]::WriteAllText($wrongArrayPath, '[{"hello":"world"}]',
+        (New-Object System.Text.UTF8Encoding($false)))
+    $wrongArrayUpload = Send-Artifact $repositoryId $wrongArrayPath "not-a-result.json" "BENCHMARK_RESULT"
+    Assert-That ($wrongArrayUpload.Status -eq 201) `
+        "a JSON array is stored even when it is not a result file"
+    $wrongArrayArtifact = $wrongArrayUpload.Body | ConvertFrom-Json
+    $wrongArrayJob = Wait-ForJob (Post-Json `
+            "$api/repositories/$repositoryId/runtime/artifacts/$($wrongArrayArtifact.id)/analyze" "{}").id 120
+    Assert-That ($wrongArrayJob.status -eq "FAILED") `
+        "the import of a non-result array fails rather than storing nothing (was $($wrongArrayJob.status))"
+    Assert-That ((Get-Prop $wrongArrayJob "errorMessage") -like '*has no*benchmark*field*') `
+        "the failure names the field the file is missing"
+}
+
+# ---------------------------------------------------------------- artefact retention
+Write-Host "`n== artefact retention ==" -ForegroundColor Cyan
+
+# What a purge would remove is computed against the clock on every read, so a fresh server has
+# candidates only if something is genuinely older than the window. Nothing here is: the point of these
+# checks is that the plan says so instead of showing an empty list that could mean anything, and that a
+# window of zero is refused rather than read as "everything". The deletion path itself — file gone,
+# mark set, measurements kept, re-upload restores — needs an artefact older than the window, so it is
+# exercised in ArtifactRetentionIntegrationTest, which backdates created_at rather than waiting 30 days.
+if ($null -eq $benchmarkArtifact) {
+    Write-Host "  SKIPPED: no benchmark artefact was uploaded, so retention has nothing to describe" -ForegroundColor Yellow
+    $skipped++
+} else {
+    $retentionPlan = Get-Json "$api/repositories/$repositoryId/runtime/retention"
+    Assert-That ($retentionPlan.retentionDays -gt 0) `
+        "the plan names the configured window in days ($($retentionPlan.retentionDays))"
+    Assert-That ($retentionPlan.automatic -eq $true) "automatic pruning is on under the default window"
+    Assert-That ($retentionPlan.storedArtefacts -ge 4) `
+        "the plan counts the files this repository holds ($($retentionPlan.storedArtefacts))"
+    Assert-That ($retentionPlan.storedBytes -gt 0) "the plan states how many bytes they occupy"
+    Assert-That ($retentionPlan.purgedArtefacts -eq 0) "nothing has been purged on a fresh repository"
+    Assert-That (@($retentionPlan.candidates).Count -eq 0) `
+        "nothing on a fresh repository is past the window"
+    Assert-That ($null -ne (Get-Prop $retentionPlan "cutoff")) `
+        "the plan states the cutoff it was computed against"
+
+    # A window of zero switches pruning off: the plan reports the repository and names no candidate,
+    # rather than treating "no window" as "no age limit".
+    $offPlan = Get-Json "$api/repositories/$repositoryId/runtime/retention?days=0"
+    Assert-That ($offPlan.automatic -eq $false) "a zero window reports pruning as off"
+    Assert-That (@($offPlan.candidates).Count -eq 0) "a zero window names no candidate"
+
+    # And a purge asked for with no window is refused, in words that say which setting is off. It is a
+    # 400 rather than an empty success: "delete everything" is not a default anyone should inherit.
+    $zeroPurge = Post-ExpectingFailure "$api/repositories/$repositoryId/runtime/retention/purge" '{"olderThanDays":0}'
+    Assert-That ($zeroPurge.Status -eq 400) `
+        "a purge with a zero-day window is a bad request (was $($zeroPurge.Status))"
+    $zeroError = $zeroPurge.Body | ConvertFrom-Json
+    Assert-That ((Get-Prop $zeroError "errorCode") -eq "VALIDATION_FAILED") `
+        "the refusal carries a stable error code"
+    Assert-That ((Get-Prop $zeroError "message") -like "*by omission*") `
+        "the refusal says it will not read a missing window as everything"
+
+    # A pass that runs is a job, produces no analysis run, and states what it did. Ten years removes
+    # nothing from a server started minutes ago, and the summary has to say that rather than "purged 0".
+    $retentionJob = Post-Json "$api/repositories/$repositoryId/runtime/retention/purge" '{"olderThanDays":3650}'
+    Assert-That ($retentionJob.jobType -eq "ARTIFACT_RETENTION") `
+        "a purge is queued as a maintenance job"
+    $retentionFinal = Wait-ForJob $retentionJob.id 120
+    Assert-That ($retentionFinal.status -eq "SUCCEEDED") `
+        "the maintenance pass succeeded (was $($retentionFinal.status))"
+    Assert-That ($null -eq (Get-Prop $retentionFinal "analysisRunId")) `
+        "a maintenance pass produces no analysis run"
+    Write-Host ("  summary: {0}" -f $retentionFinal.resultSummary)
+    Assert-That ($retentionFinal.resultSummary -like "*Nothing to purge*") `
+        "the pass says nothing was old enough"
+
+    $retentionAfter = Get-Json "$api/repositories/$repositoryId/runtime/retention"
+    Assert-That ($retentionAfter.storedArtefacts -eq $retentionPlan.storedArtefacts) `
+        "a pass that purges nothing leaves the stored count alone"
+    $benchmarkAfter = Get-Json "$api/repositories/$repositoryId/runtime/artifacts/$($benchmarkArtifact.id)"
+    Assert-That ((Get-Prop $benchmarkAfter "purgedAt") -eq $null) `
+        "the artefact is still stored and still analysable"
 }
 
 # ---------------------------------------------------------------- retention on delete

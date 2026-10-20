@@ -212,7 +212,12 @@ function formatMillis(ms: number): string {
   return `${ms.toFixed(3)} ms`;
 }
 
-/** The word for how a value's samples were reduced. */
+/**
+ * The word for how a value's samples were reduced.
+ *
+ * `AS_REPORTED` is not a reduction and does not read like one: the number was computed elsewhere and
+ * is being repeated, which is why the label says where it came from rather than naming an operation.
+ */
 export function aggregationLabel(aggregation: MeasurementAggregation): string {
   switch (aggregation) {
     case "COUNT":
@@ -223,6 +228,8 @@ export function aggregationLabel(aggregation: MeasurementAggregation): string {
       return "mean";
     case "MAX":
       return "max";
+    case "AS_REPORTED":
+      return "as reported";
   }
 }
 

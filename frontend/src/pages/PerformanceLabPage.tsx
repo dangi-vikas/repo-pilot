@@ -56,22 +56,29 @@ const ARTIFACT_TYPES: RuntimeArtifactType[] = [
 const KINDS: MetricKind[] = ["DURATION", "COUNTER", "GAUGE", "SIZE"];
 
 /** The job types this screen produces and reports. */
-const RUNTIME_JOB_TYPES = ["JFR_ANALYSIS", "THREAD_DUMP_ANALYSIS", "HEAP_ANALYSIS"];
+const RUNTIME_JOB_TYPES = [
+  "JFR_ANALYSIS",
+  "THREAD_DUMP_ANALYSIS",
+  "HEAP_ANALYSIS",
+  "BENCHMARK_IMPORT",
+];
 
 /**
  * The namespace each reader puts in front of its metric keys.
  *
  * A metric key is `<namespace>.<family>.<leaf>`, and the backend's `metric` filter is a key prefix,
  * so filtering by family means filtering by `<namespace>.<family>`. The namespace is read from the
- * run's artefact type rather than assumed to be `jfr`: a thread dump's keys start `threaddump.` and a
- * heap dump's start `heapdump.`, and a family filter that sent `jfr.threads` would quietly return
- * nothing for a run that has rows. A type this map does not know is filtered family-wide rather than
- * wrongly, so an unlisted reader shows everything instead of hiding it.
+ * run's artefact type rather than assumed to be `jfr`: a thread dump's keys start `threaddump.`, a
+ * heap dump's `heapdump.` and a benchmark result's `benchmark.`, and a family filter that sent
+ * `jfr.threads` would quietly return nothing for a run that has rows. A type this map does not know
+ * is filtered family-wide rather than wrongly, so an unlisted reader shows everything instead of
+ * hiding it.
  */
 const METRIC_NAMESPACE: Partial<Record<RuntimeArtifactType, string>> = {
   JFR_RECORDING: "jfr",
   THREAD_DUMP: "threaddump",
   HEAP_DUMP: "heapdump",
+  BENCHMARK_RESULT: "benchmark",
 };
 
 /**
@@ -92,7 +99,7 @@ export function PerformanceLabPage() {
       <>
         <PageHeader
           title="Performance Lab"
-          description="Upload a runtime artefact — a JFR recording, a thread dump or a heap dump — analyse it locally, and read what it measured."
+          description="Upload a runtime artefact — a JFR recording, a thread dump, a heap dump or a JMH result file — analyse it locally, and read what it measured."
         />
         <RepositoryRequired />
       </>
@@ -160,7 +167,7 @@ function PerformanceLab({ repositoryId }: { repositoryId: Uuid }) {
     <>
       <PageHeader
         title="Performance Lab"
-        description="Recordings, thread dumps and heap dumps are read locally: JFR through the JDK's own Flight Recorder API, a thread dump through a parser for the format jstack writes, a heap dump through a parser for the HPROF files jcmd writes. Every number is a measurement of a specific run, never an estimate."
+        description="Recordings, thread dumps and heap dumps are read locally: JFR through the JDK's own Flight Recorder API, a thread dump through a parser for the format jstack writes, a heap dump through a parser for the HPROF files jcmd writes. A JMH result file is read too — and every figure in it is quoted from the harness that computed it, not measured here. Every number is a measurement of a specific run, never an estimate."
       />
 
       {runtimeJobActive ? (
@@ -340,6 +347,7 @@ function UploadCard({
 
   const memoryBearing = type === "HEAP_DUMP";
   const threadDumpBearing = type === "THREAD_DUMP";
+  const benchmarkBearing = type === "BENCHMARK_RESULT";
 
   return (
     <Card
@@ -464,6 +472,23 @@ function UploadCard({
           </Banner>
         </div>
       ) : null}
+
+      {/*
+        A benchmark result carries no heap and no stack, but it does carry the JVM's command line and
+        the path to the JVM binary — both of which the reader counts and discards rather than storing.
+        Saying that at upload time is more honest than the absence of a warning that would be read as
+        "nothing sensitive here".
+      */}
+      {benchmarkBearing ? (
+        <div style={{ marginTop: "var(--space-3)" }}>
+          <Banner tone="info" title="A benchmark result holds numbers, and a command line">
+            Only the array <span className="rp-mono">-rf json</span> writes is read. The file also
+            carries the JVM's arguments and the path to its binary, and RepoPilot counts those without
+            storing them, because an argument is where a credential usually is. The figures inside are
+            the harness's own — this build measures nothing when it imports them.
+          </Banner>
+        </div>
+      ) : null}
     </Card>
   );
 }
@@ -526,16 +551,26 @@ function RunCard({
       ) : null}
 
       {/*
-        The refusal to invent a severity is stated in the UI, not just in the docs: a reader
-        who sees a list of numbers must be told that none of them crossed a policy threshold,
-        because no policy was applied.
+        A benchmark result is the one artefact on this screen that RepoPilot did not observe. It is a
+        statement by a harness on another machine, and every figure under it was computed there. The
+        banner says that instead of the runtime one, because "one process, on one machine, over one
+        window" would describe a recording that does not exist.
       */}
-      <Banner tone="info" title="No threshold was applied and no severity was assigned">
-        These are quantities read from one runtime artefact: one process, on one machine, over one
-        window or one instant. RepoPilot does not decide whether a value is good or bad without a
-        policy you supplied, so it reports the measurement and its limits and leaves the judgement to
-        you.
-      </Banner>
+      {data?.artifactType === "BENCHMARK_RESULT" ? (
+        <Banner tone="warning" title="Quoted from the benchmark harness — not measured here">
+          Every score, error, confidence interval and percentile on this page was computed by the
+          benchmark harness that ran on the machine the file describes. RepoPilot repeats them without
+          changing them and applies no threshold and no severity. One file states one run and this
+          repository holds no baseline, so nothing here is compared with anything.
+        </Banner>
+      ) : (
+        <Banner tone="info" title="No threshold was applied and no severity was assigned">
+          These are quantities read from one runtime artefact: one process, on one machine, over one
+          window or one instant. RepoPilot does not decide whether a value is good or bad without a
+          policy you supplied, so it reports the measurement and its limits and leaves the judgement to
+          you.
+        </Banner>
+      )}
 
       {provenance !== null ? (
         <div style={{ marginTop: "var(--space-3)" }}>
@@ -660,6 +695,8 @@ function provenanceItems(provenance: RuntimeProvenance): Array<{ label: string; 
   // sentence saying so is the honest value for this row.
   add("VM", environment.jvmName ?? dump.jvmName);
   add("VM build", environment.jvmVersion);
+  add("JMH version", environment.jmhVersion);
+  add("JDK", environment.jdkVersion);
   add("VM started", environment.jvmStartTime != null ? formatInstant(environment.jvmStartTime) : null);
   add("Process id", environment.processId != null ? formatNumber(environment.processId) : null);
   addBlob("Operating system", environment.osVersion);
@@ -682,11 +719,54 @@ function provenanceItems(provenance: RuntimeProvenance): Array<{ label: string; 
     );
   }
 
+  // A benchmark result's own facts. The JVM's command line is counted and never carried — a `-D`
+  // argument is a credential carrier, which is the same rule the JFR reader applies — so the basis
+  // row is shown beside the count rather than the count being left to imply the arguments are here.
+  const benchmark = provenance.benchmark ?? {};
+  add("Benchmark entries", benchmark.entries != null ? formatNumber(benchmark.entries) : null);
+  add(
+    "Entries truncated",
+    benchmark.truncated === true
+      ? "yes — the file held more entries than this run stored, in file order"
+      : null,
+  );
+  add("Modes", (benchmark.modes ?? []).join(", "));
+  add("Parameters", (benchmark.parameters ?? []).join(", "));
+  add("Warmup time", (benchmark.warmupTimes ?? []).join(", "));
+  add("Measurement time", (benchmark.measurementTimes ?? []).join(", "));
+  add(
+    "JVM arguments recorded",
+    benchmark.jvmArgumentsRecorded != null
+      ? `${formatNumber(benchmark.jvmArgumentsRecorded)} in the file, none stored`
+      : null,
+  );
+  add("JVM arguments basis", benchmark.jvmArgumentsBasis);
+  add(
+    "Entries without per-iteration values",
+    benchmark.entriesWithoutIterations != null
+      ? formatNumber(benchmark.entriesWithoutIterations)
+      : null,
+  );
+  add(
+    "Entries without an error estimate",
+    benchmark.entriesWithoutErrorEstimate != null
+      ? formatNumber(benchmark.entriesWithoutErrorEstimate)
+      : null,
+  );
+
   // The reader's own account of what it did not do. Stated as facts rather than left implicit,
   // because a reader is entitled to know that nothing here decides good from bad.
   add("Measurements", produced.measurements != null ? formatNumber(produced.measurements) : null);
   add("Findings", produced.findings != null ? formatNumber(produced.findings) : "0");
   add("Thresholds applied", produced.thresholdsApplied === true ? "yes" : "no");
+  add(
+    "Comparisons made",
+    produced.comparisonsMade === true
+      ? "yes"
+      : produced.comparisonsMade === false
+        ? "no — one file states one run, and there is no baseline in this repository"
+        : null,
+  );
 
   return items;
 }
@@ -845,7 +925,7 @@ function parseAttributes(raw: string | null | undefined): Array<[string, string]
   }
 }
 
-/** Stored artefacts, including the ones this build cannot read. */
+/** Stored artefacts, including any whose bytes retention has removed. */
 function ArtifactsCard({
   artifacts,
   isLoading,
@@ -878,7 +958,7 @@ function ArtifactsCard({
         <EmptyState
           icon="file"
           title="No artefacts"
-          message="Nothing has been uploaded for this repository. Upload a runtime artefact above; it is stored whether or not this build can read it."
+          message="Nothing has been uploaded for this repository. Upload a runtime artefact above; it is stored by content hash before anything reads it."
         />
       ) : (
         <div className="table-wrap">
@@ -910,8 +990,24 @@ function ArtifactsCard({
                     {artifact.containsProcessMemory ? (
                       <Badge tone="warning">process memory</Badge>
                     ) : null}
+                    {/*
+                      The bytes were removed by retention but the row, the run and every measurement
+                      are still here. That is a different state from "not uploaded" and from "not
+                      analysed", and collapsing it into either would lose the reason the Analyse button
+                      is unavailable.
+                    */}
+                    {hasValue(artifact.purgedAt) ? (
+                      <Badge tone="neutral">file purged</Badge>
+                    ) : null}
                   </td>
-                  <td className="table-num nowrap">{formatBytes(artifact.sizeBytes)}</td>
+                  <td className="table-num nowrap">
+                    {formatBytes(artifact.sizeBytes)}
+                    {hasValue(artifact.purgedAt) ? (
+                      <div className="rp-faint" style={{ fontSize: "var(--text-xs)" }}>
+                        bytes released
+                      </div>
+                    ) : null}
+                  </td>
                   <td className="nowrap">{formatRelative(artifact.createdAt)}</td>
                   <td>
                     {hasValue(artifact.analysisRunId) ? (
@@ -922,17 +1018,24 @@ function ArtifactsCard({
                     {!artifact.supported && hasValue(artifact.unsupportedReason) ? (
                       <TruncatedCell text={artifact.unsupportedReason} width={220} />
                     ) : null}
+                    {hasValue(artifact.purgedAt) ? (
+                      <div className="rp-faint" style={{ fontSize: "var(--text-xs)" }}>
+                        file removed {formatRelative(artifact.purgedAt)}; upload it again to re-analyse
+                      </div>
+                    ) : null}
                   </td>
                   <td className="table-num">{formatNumber(artifact.measurementCount)}</td>
                   <td>
                     <button
                       type="button"
                       className="btn btn-sm"
-                      disabled={!artifact.supported || analyze.isPending}
+                      disabled={!artifact.supported || hasValue(artifact.purgedAt) || analyze.isPending}
                       title={
-                        artifact.supported
-                          ? "Queue the analysis of this artefact"
-                          : (artifact.unsupportedReason ?? "This build cannot read this file.")
+                        hasValue(artifact.purgedAt)
+                          ? "The stored file was removed by retention. Its measurements are still here, but there is nothing left to analyse; upload the file again first."
+                          : artifact.supported
+                            ? "Queue the analysis of this artefact"
+                            : (artifact.unsupportedReason ?? "This build cannot read this file.")
                       }
                       onClick={() => analyze.mutate(artifact.id)}
                     >

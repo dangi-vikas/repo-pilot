@@ -156,11 +156,17 @@ repopilot:
     max-findings-per-run: 5000
     max-jfr-events: 2000000
     max-artifact-size-bytes: 1073741824
+    # JSON has no header, so an uploaded benchmark result is bounded by size rather than by magic bytes.
+    max-benchmark-result-bytes: 67108864
     heap-dump-processing-budget-bytes: 2147483648
   storage:
     data-dir: ${REPOPILOT_DATA_DIR:./data}
     artifacts-dir: artifacts
-    retention-days: 30
+    # Zero switches automatic pruning off rather than meaning "no age limit": nothing is queued and
+    # the plan names no candidate. A purge can still be asked for explicitly, with a window.
+    retention-days: ${REPOPILOT_STORAGE_RETENTION_DAYS:30}
+    retention-sweep-interval-millis: 3600000
+    retention-initial-delay-millis: 120000
     cleanup-temp-on-startup: true
   privacy:
     log-source-content: false
