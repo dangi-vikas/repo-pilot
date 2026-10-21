@@ -26,11 +26,13 @@ There were three possible products here:
 This ADR records the third option, because the product's whole claim is evidence discipline and an AI
 feature that quietly exempts itself from it would be the weakest thing in the build.
 
-The constraint that shaped the rest of the design is that Ollama is not installed in the environment
+The constraint that shaped the rest of the design is that Ollama was not installed in the environment
 where this phase was built. That is not a reason to ship an untested path or to fake a model: it is a
 reason to make the parts that *can* be tested — retrieval, prompt construction, parsing, verification,
 grounding — independent of any model, and to provide an explicit, loudly-labelled extractor so the
-whole vertical slice can be exercised end to end.
+whole vertical slice can be exercised end to end. Ollama was installed afterwards in the same
+environment and a real model answered through this pipeline; the measured result is recorded under
+*Verification* below.
 
 ## Decision
 
@@ -126,6 +128,13 @@ filesystem. The prose is stored as written; the verdicts are stored beside it, n
     selected because Ollama is unreachable. A build that silently answered with it would be fabricating
     an AI feature.
 
+15. **The JSON shape describes types, not text to copy.** The first shape showed example values —
+    `"answer":"Markdown answer with [E1] markers"`, `"unanswered":["..."]`, `"limitations":"..."` — and
+    Qwen2.5-Coder 3B returned them verbatim as the answer, with a real, verified claim beside them.
+    The shape now uses `<angle-bracket>` descriptions, and a rule states that every placeholder must be
+    replaced and that `"..."` or a schema description must never be returned. A small model follows a
+    shape it is told to follow, including the parts that were meant as illustration.
+
 ## Consequences
 
 - **"Grounded" is a check, not a tone.** A reviewer can read the claims table, click a citation and land
@@ -150,3 +159,26 @@ filesystem. The prose is stored as written; the verdicts are stored beside it, n
 - **Not claimed:** that the answer is correct, that a grounded answer is a good answer, that retrieval is
   exhaustive, or that a model's reasoning is visible. An investigation reports what a model said about a
   numbered evidence set, and exactly which of those citations survived checking.
+
+## Verification
+
+The decision was exercised against a real model after the phase was written. What was measured:
+
+- **Environment.** Ollama 0.40.7 on `127.0.0.1:11434`, `qwen2.5-coder:3b` (1.9 GB), CPU-only hardware
+  (Intel i5-1335U, Intel Iris Xe, no GPU offload). App defaults: 120 s provider timeout, 1 500
+  completion tokens, temperature 0.1, JSON mode.
+- **"Why is the empty catch in OrderImporter a correctness problem?"** → `SUCCEEDED`, grounded, one
+  claim `VERIFIED`, 12 evidence items, provider latency **78 710 ms**.
+- **"What does the catch block in OrderImporter do with a failed row?"** (after decision 15) →
+  `SUCCEEDED`, grounded, one claim `VERIFIED`, 12 evidence items (3 findings, 6 symbols, 2 files and the
+  repository summary), prompt **8 981 characters** (**6 566** evidence), latency **75 658 ms**.
+- **The live smoke test passed against this provider:** 351 checks, 0 failures, 0 skipped. It is four
+  checks shorter than the extractor run (355) because "every claim is `VERIFIED`", "no claim is
+  unsupported or partly supported", "every item in the prompt was cited" and "the investigation records
+  what it could not answer" are properties of the extractor, not requirements a model can be held to.
+- **Decision 15 came out of this run, not out of a test.** The first real answer was a correct claim
+  wrapped in the schema's placeholder prose; only running a model could show that.
+
+Not established: that the default `qwen2.5-coder:7b` fits the timeout on this hardware (it was not run);
+that a grounded answer is a correct answer; or that a 3B model's conclusions are adequate where the
+evidence only implies them.

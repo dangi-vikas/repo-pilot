@@ -72,7 +72,8 @@ import static org.assertj.core.api.Assertions.assertThat;
         "repopilot.ai.enabled=false",
         // The dispatcher's first pass runs at startup. A long interval afterwards keeps every later
         // pass the test's own, so the order of events below is fixed.
-        "repopilot.jobs.dispatch-interval-millis=3600000"
+        "repopilot.jobs.dispatch-interval-millis=3600000",
+        "repopilot.jobs.dispatch-initial-delay-millis=3600000"
 })
 @AutoConfigureWebTestClient
 class RuntimeAnalysisIntegrationTest {

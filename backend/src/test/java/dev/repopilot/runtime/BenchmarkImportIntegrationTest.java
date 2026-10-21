@@ -65,7 +65,8 @@ import static org.hamcrest.Matchers.containsString;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK, properties = {
         "repopilot.security.token=integration-test-bearer-token-0006",
         "repopilot.ai.enabled=false",
-        "repopilot.jobs.dispatch-interval-millis=3600000"
+        "repopilot.jobs.dispatch-interval-millis=3600000",
+        "repopilot.jobs.dispatch-initial-delay-millis=3600000"
 })
 @AutoConfigureWebTestClient
 class BenchmarkImportIntegrationTest {

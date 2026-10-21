@@ -247,7 +247,9 @@ answer is never rendered as an observation.
 
 ## 7. Data leaving the machine
 
-By default, none. Ollama runs on loopback. The only path by which source could leave the
+By default, none. Ollama runs on loopback. That was exercised with a real model: Ollama 0.40.7 on
+`127.0.0.1:11434` answered an investigation, so the prompt and its excerpts reached a process on this
+machine and no network peer. The only path by which source could leave the
 machine is the optional OpenAI-compatible provider, which is:
 
 - **disabled by default** (`repopilot.ai.openai-compatible.enabled=false`), and
@@ -453,6 +455,10 @@ both immediately.
   retrieved and what was not. A grounded answer means the citations held up; it does not mean
   the model's reasoning did, and an injected instruction inside a file can still shape what the
   model says about real evidence.
+- **A small model can follow the shape and not the intent.** The prompt now describes the JSON
+  types rather than showing copyable prose, because Qwen2.5-Coder 3B once returned the schema's
+  example strings as its answer. Wording reduces that; nothing in the code can reject a
+  well-formed, correctly-cited answer that is merely unhelpful.
 - **Analysis reads source as text and repeats what it finds.** A secret written in a file whose
   name is not credential-like will be read, and a rule may report its location (never its
   value). Redaction is a mitigation, not a proof.

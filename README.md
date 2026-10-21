@@ -46,6 +46,8 @@ against indexed evidence by the backend before you see it.
 | [AI Investigation — claims and verdicts](docs/screenshots/ai-investigation-claims.png) | Each claim exactly as the model wrote it, the evidence it cited, and its verdict. One failed citation makes the whole answer ungrounded; the sentence is still shown |
 | [AI Investigation — the evidence](docs/screenshots/ai-investigation-evidence.png) | `E1…E12` with rule, location and `SOURCE CHECKED`: *confirmed* is the cited excerpt re-read and re-hashed; *no location* is an item with no line to re-read |
 | [AI Investigation — provenance](docs/screenshots/ai-investigation-provenance.png) | The prompt's size and SHA-256 instead of the prompt, `12 item(s) of evidence (3 findings, 6 symbols, 2 files, 1 repository)`, and why an excerpt hash is kept instead of the excerpt |
+| [AI Investigation — a real model](docs/screenshots/ai-investigation-real-model.png) | The same pipeline with Qwen2.5-Coder 3B through Ollama: a grounded answer, a claim written by the model, `VERIFIED` against `E1` — no test double involved |
+| [AI Investigation — a real model's provenance](docs/screenshots/ai-investigation-real-model-provenance.png) | Provider `ollama`, model `qwen2.5-coder:3b`, prompt 8,981 chars (6,566 of evidence), measured latency 75,658 ms, and the evidence set the model was shown |
 | [Settings](docs/screenshots/settings.png) | Connection, sandbox roots, AI provider status, privacy controls |
 | [Settings — artefact retention](docs/screenshots/settings-retention.png) | The window (`30` days), what is stored (`1 (281 KB)`), what a pass would remove, and *"Nothing is past this window"* instead of a bare empty table |
 | [Command palette](docs/screenshots/command-palette.png) | `Ctrl K` |
@@ -115,7 +117,7 @@ rather than pretending.
 | Benchmark import in the UI | **Working** | The run card says the figures are the harness's, not this build's; provenance lists modes, parameters, iteration times, JMH and JDK versions, and *comparisons made: no* |
 | Artefact retention | **Working** | A purge removes the stored **file** of an artefact past the window; the row, the run and every measurement are kept. The plan is computed live and *is* the dry run; a zero-day window is refused rather than read as "everything" ([ADR 0012](docs/adr/0012-artefact-retention.md)) |
 | Benchmark regression / baseline view | **Not yet, by design** | One upload states one run, and RepoPilot holds no baseline to compare it with. Nothing in the product claims a delta it did not measure |
-| AI investigation with citation checking | **Working** | A question retrieves a bounded, numbered evidence set deterministically (`E1…E12`), the provider answers from it, and the backend re-reads every cited excerpt and re-hashes it before anything is displayed. One unsupported claim makes the answer *ungrounded*; the prose is never rewritten ([ADR 0013](docs/adr/0013-ai-investigation.md)) |
+| AI investigation with citation checking | **Working, verified with a real local model** | A question retrieves a bounded, numbered evidence set deterministically (`E1…E12`), the provider answers from it, and the backend re-reads every cited excerpt and re-hashes it before anything is displayed. One unsupported claim makes the answer *ungrounded*; the prose is never rewritten ([ADR 0013](docs/adr/0013-ai-investigation.md)). Verified end to end with Ollama 0.40.7 and Qwen2.5-Coder 3B on CPU-only hardware: grounded answers with every written claim verified, 54–79 s per question. The shipped `qwen2.5-coder:7b` default was not run on this machine |
 | Embeddings / pgvector | **Not yet** | Off by default; deliberately not started without a proven need |
 
 Submitting a job type that has no handler returns a clear `UNSUPPORTED_INPUT` error instead
@@ -687,6 +689,11 @@ Stated plainly, because a tool that hides these cannot be trusted with the other
   diagnostics list what the model was not shown. A grounded answer means the citations held up,
   not that the reasoning was right, and the answer never hides a claim that failed: it is shown
   with its verdict beside it.
+- **Only a 3B model was run here, and it is not the default.** The end-to-end verification used
+  `qwen2.5-coder:3b` through Ollama on a CPU-only machine, where one question took 54–79 s of the
+  120 s provider timeout. The shipped default is `qwen2.5-coder:7b`; it was not run here and would
+  very likely exceed that timeout on hardware without a GPU. A model small enough to run on a CPU
+  also writes thinner prose — the pipeline verifies its citations, not its judgement.
 - **A heap dump is a census, never a memory model.** There is no dominator tree, so there is no
   retained size, no leak verdict and no "this classloader is holding the heap" — a type near the
   top of the table is a type whose objects *hold a lot of recorded data*, and the table that says

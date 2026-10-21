@@ -63,7 +63,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK, properties = {
         "repopilot.security.token=integration-test-bearer-token-0005",
         "repopilot.ai.enabled=false",
-        "repopilot.jobs.dispatch-interval-millis=3600000"
+        "repopilot.jobs.dispatch-interval-millis=3600000",
+        "repopilot.jobs.dispatch-initial-delay-millis=3600000"
 })
 @AutoConfigureWebTestClient
 class HeapDumpAnalysisIntegrationTest {

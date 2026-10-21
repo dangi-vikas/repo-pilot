@@ -1533,9 +1533,18 @@ if (-not $overview.ai.usable) {
     $detail = Get-Json "$api/repositories/$($fixture.id)/investigations/$investigationId"
     $claims = @($detail.claims)
     $evidence = @($detail.evidence)
+    # The deterministic extractor quotes evidence verbatim, so its answer must be fully grounded.
+    # A real model may legitimately produce an ungrounded answer; what has to hold then is that the
+    # verdict is consistent with the claims it was computed from. Asserting "grounded" for every
+    # provider would make this gate fail for a correct product on a weak model.
+    $isDeterministic = ($overview.ai.providerId -eq "deterministic")
 
     Assert-That ($detail.status -eq "SUCCEEDED") "the investigation is SUCCEEDED"
-    Assert-That ($detail.grounded -eq $true) "the answer is grounded"
+    if ($isDeterministic) {
+        Assert-That ($detail.grounded -eq $true) "the deterministic extractor's answer is grounded"
+    } else {
+        Assert-That ($null -ne $detail.grounded) "the answer carries a grounding verdict"
+    }
     Assert-That ($claims.Count -gt 0) "the answer has claims to check"
     Assert-That ($evidence.Count -gt 0) "the prompt was built from evidence"
     Assert-That ([int] $detail.evidenceCount -eq $evidence.Count) `
@@ -1544,33 +1553,61 @@ if (-not $overview.ai.usable) {
     Assert-That ([string] $detail.retrievalSummary `
             -match ("^" + [int] $detail.evidenceCount + " item\(s\) of evidence")) `
         "the retrieval summary states how many items it counted"
-    Assert-That ([int] $detail.verifiedClaims -eq $claims.Count) `
-        "every claim is VERIFIED (verified=$($detail.verifiedClaims) of $($claims.Count))"
-    Assert-That ([int] $detail.unsupportedClaims -eq 0) "no claim is unsupported"
-    Assert-That ([int] $detail.partialClaims -eq 0) "no claim is partly supported"
-    Assert-That (@($claims | Where-Object { $_.verificationStatus -ne "VERIFIED" }).Count -eq 0) `
-        "no claim carries a verdict other than VERIFIED"
+    Assert-That ([int] $detail.verifiedClaims + [int] $detail.partialClaims +
+        [int] $detail.unsupportedClaims -eq $claims.Count) `
+        "the verdict counts add up to the number of claims"
+    if ($isDeterministic) {
+        Assert-That ([int] $detail.verifiedClaims -eq $claims.Count) `
+            "every claim is VERIFIED (verified=$($detail.verifiedClaims) of $($claims.Count))"
+        Assert-That ([int] $detail.unsupportedClaims -eq 0) "no claim is unsupported"
+        Assert-That ([int] $detail.partialClaims -eq 0) "no claim is partly supported"
+        Assert-That (@($claims | Where-Object { $_.verificationStatus -ne "VERIFIED" }).Count -eq 0) `
+            "no claim carries a verdict other than VERIFIED"
+    } else {
+        $failedClaims = @($claims | Where-Object { $_.verificationStatus -ne "VERIFIED" })
+        $dangling = @($detail.diagnostics.danglingMarkers)
+        if ($detail.grounded -eq $true) {
+            Assert-That ($failedClaims.Count -eq 0) `
+                "a grounded answer has no failed claim (failed=$($failedClaims.Count))"
+            Assert-That ($dangling.Count -eq 0) "a grounded answer has no dangling citation"
+        } else {
+            Assert-That (($failedClaims.Count -gt 0) -or ($dangling.Count -gt 0)) `
+                "an ungrounded answer says which claim or citation failed"
+        }
+        Write-Host ("  model verdict: grounded={0}, verified={1}, partial={2}, unsupported={3}" -f `
+            $detail.grounded, $detail.verifiedClaims, $detail.partialClaims, $detail.unsupportedClaims)
+    }
 
     Assert-That ((Get-Prop $detail "promptSha256").Length -eq 64) `
         "the prompt SHA-256 is recorded (64 hex characters)"
     Assert-That ([int] $detail.promptChars -gt 0) "the prompt size is recorded"
     Assert-That ([int] $detail.contextChars -gt 0) "the evidence size within the prompt is recorded"
     Assert-That ((Get-Prop $detail "completedAt") -ne $null) "the investigation records when it finished"
-    Assert-That ((Get-Prop $detail "modelProvider") -eq "deterministic") `
-        "the provider that answered is recorded"
+    Assert-That ((Get-Prop $detail "modelProvider") -eq $overview.ai.providerId) `
+        "the provider that answered is the configured provider"
+    Assert-That (-not [string]::IsNullOrWhiteSpace([string] (Get-Prop $detail "modelName"))) `
+        "the model that answered is recorded"
 
     # The deterministic extractor is a test double. If it is in use, the answer must say so: a
-    # reader has to be able to tell this apart from a model's answer.
+    # reader has to be able to tell this apart from a model's answer. A real model's limitations
+    # are its own words plus whatever the parser had to add, so only the presence is checked.
     $limitations = [string] (Get-Prop $detail "limitations")
-    Assert-That ($limitations -like "*No language model was called*") `
-        "the extractor states that no model was called"
+    if ($isDeterministic) {
+        Assert-That ($limitations -like "*No language model was called*") `
+            "the extractor states that no model was called"
+    }
 
     # Evidence discipline: keys are numbered, every key was cited, and the interesting ones carry a
     # location that was re-read from disk. No excerpt text may appear in the payload at all.
     Assert-That (@($evidence | Where-Object { $_.key -notmatch '^E\d+$' }).Count -eq 0) `
         "every evidence key is numbered En"
-    Assert-That (@($evidence | Where-Object { -not $_.cited }).Count -eq 0) `
-        "every item in the prompt was cited"
+    $uncited = @($evidence | Where-Object { -not $_.cited })
+    if ($isDeterministic) {
+        Assert-That ($uncited.Count -eq 0) "every item in the prompt was cited"
+    } else {
+        Assert-That ($uncited.Count -lt $evidence.Count) `
+            "at least one item in the prompt was cited (uncited=$($uncited.Count) of $($evidence.Count))"
+    }
     Assert-That (@($evidence | Where-Object { $_.kind -eq "FINDING" }).Count -gt 0) `
         "retrieval reached the static findings, not only the symbol table"
     $located = @($evidence | Where-Object { (Get-Prop $_ "path") -ne $null })
@@ -1585,15 +1622,18 @@ if (-not $overview.ai.usable) {
         "the excerpt hash is not exposed through the API"
 
     # Diagnostics say what the investigation could not do. The extractor leaves every conclusion
-    # to the reader, so it always has one thing to say.
-    Assert-That (@($detail.diagnostics.unanswered).Count -gt 0) `
-        "the investigation records what it could not answer"
+    # to the reader, so it always has one thing to say; a model may have answered everything.
+    Assert-That ($null -ne $detail.diagnostics) "the investigation records its diagnostics"
+    if ($isDeterministic) {
+        Assert-That (@($detail.diagnostics.unanswered).Count -gt 0) `
+            "the investigation records what it could not answer"
+    }
 
     # The list endpoint agrees with the detail endpoint.
     $investigationPage = Get-Json "$api/repositories/$($fixture.id)/investigations?size=50"
     $listed = @($investigationPage.items | Where-Object { $_.id -eq $investigationId })
     Assert-That ($listed.Count -eq 1) "the investigation appears once in the repository's list"
-    Assert-That ($listed[0].grounded -eq $true) "the list reports the same grounding verdict"
+    Assert-That ($listed[0].grounded -eq $detail.grounded) "the list reports the same grounding verdict"
 
     # A repository's identifier cannot be used to read another repository's investigation.
     $crossRepo = Get-ExpectingFailure "$api/repositories/$repositoryId/investigations/$investigationId"

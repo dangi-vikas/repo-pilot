@@ -2,7 +2,8 @@
 
 - **Phase:** 7 of 8
 - **Date:** 2026-10-21
-- **Status:** complete; backend suite, production build and live smoke test green
+- **Status:** complete; backend suite, production build and live smoke test green, and the path verified
+  end to end with a real local model (Ollama + Qwen2.5-Coder 3B)
 - **ADRs:** [0013 — AI investigation](../adr/0013-ai-investigation.md)
 
 ## 1. What works now
@@ -22,9 +23,12 @@
 4. Each located item contributes an excerpt read through two guards — the sandbox and the revision
    recorded on the row — capped at **24 lines / 1 200 characters**. The prompt is bounded at
    **24 000 characters**, and the builder reports only the items it actually included.
-5. The provider answers from that prompt. On the recorded fixture (3 findings, 6 symbols, 2 files
-   and the repository summary) that is **12 items, 12 claims, 12 verified**, prompt **8 690
-   characters** of which **6 630** were evidence, prompt SHA-256 `af428b…`, `grounded: true`.
+5. The provider answers from that prompt. With the deterministic extractor on the recorded fixture
+   (3 findings, 6 symbols, 2 files and the repository summary) that is **12 items, 12 claims, 12
+   verified**, prompt **8 690 characters** of which **6 630** were evidence, prompt SHA-256
+   `af428b…`, `grounded: true`. The same pipeline with Qwen2.5-Coder 3B through Ollama returned a
+   real answer with one verified claim in 75.7 s (see §7); the numbers differ because the evidence and
+   the writer differ, not the checking.
 6. Every claim is checked four ways: the cited key must have been in the prompt; the claim must cite
    something; the cited excerpt is re-read and re-hashed (`CONFIRMED` / `CHANGED` / `MISSING` /
    `NOT_LOCATED`); and any `path:line` the claim names must be covered by the evidence it cites.
@@ -161,12 +165,39 @@ files by path for retrieval.
     silently — while the page tells the reader that the evidence table is the complete record of what
     the model was shown. Found by checking the documentation against the code rather than by a test;
     fixed by adding the omitted count to the retrieval notes.
+11. **The JSON schema's example values were copyable prose, and a small model copied them.** The shape
+    the prompt demanded contained `"answer":"Markdown answer with [E1] markers"`, `"unanswered":["..."]`
+    and `"limitations":"..."`. Qwen2.5-Coder 3B returned those strings verbatim: the one claim it wrote
+    was real and verified, but the answer body, limitations and unanswered list were the schema's
+    placeholders — a screenshot is what exposed it. No unit test can observe a model copying an
+    example. Fixed by rewriting the shape with `<angle-bracket>` type descriptions and adding a rule
+    that every placeholder must be replaced; the same class of question then produced real prose and
+    real limitations, and the two real-model screenshots record the result.
+12. **The live smoke test hard-coded the test double.** It asserted `modelProvider == "deterministic"`,
+    that the answer says no model was called, and that every claim is `VERIFIED`, so a correct build
+    answering through Ollama would have failed the gate. Fixed by asserting the contract for any
+    provider — the verdict counts add up, a grounded answer has no failed claim or dangling marker, an
+    ungrounded one names the failure — and keeping the extractor-specific assertions behind
+    `providerId == "deterministic"`. The gate is four checks shorter on a model path, because "every
+    claim is VERIFIED", "no claim is unsupported or partly supported", "every item in the prompt was
+    cited" and "what it could not answer" are not properties a model can be required to have.
+13. **A cancellation test raced the scheduler.** `InvestigationIntegrationTest` sets
+    `repopilot.jobs.dispatch-interval-millis=3600000` so it can call `dispatchPass()` itself, but it left
+    the dispatcher's `dispatch-initial-delay-millis` at its 2 s default. Under load the startup pass
+    landed between `ask()` and `cancel()`, claimed the job, and the detail read `RUNNING` instead of
+    `CANCELLED`. That is a test defect, not a product defect — cancelling a running investigation is
+    documented to take effect at the handler's checkpoint — but a gate that fails at random is worse
+    than no gate. Fixed by disabling the initial delay in all nine integration tests that drive the
+    dispatcher manually; the retention tests already did this for their own scheduler.
 
 ## 5. Known limitations, stated rather than papered over
 
-- **Ollama is not installed in this environment.** No real model has ever answered here. Every
-  verified result in this report came from the deterministic extractor or from the scripted test
-  provider; the Ollama client is exercised only by its unit tests.
+- **The default model was not measured here.** Ollama 0.40.7 and Qwen2.5-Coder 3B were installed and
+  did answer (§7), on a CPU-only machine (i5-1335U, Intel Iris Xe, no GPU offload): answers took 75.7 s
+  and 78.7 s of the 120 s provider timeout for a few hundred tokens. The shipped default is
+  `qwen2.5-coder:7b`, which was **not** run here; on this hardware it would very likely exceed the
+  timeout. A GPU, a smaller model or a longer `request-timeout-seconds` is an operator decision; a
+  timeout fails the job visibly and never falls back to another provider.
 - **Retrieval is lexical.** No embeddings, no stemming beyond lower-casing, no synonyms. A question
   phrased entirely in domain words that appear nowhere in the index retrieves nothing and the job
   fails with "no indexed evidence matched".
@@ -182,7 +213,8 @@ files by path for retrieval.
   is one question and one answer.
 - **`MODEL_TIMEOUT` is three minutes and not configurable** in this build; a slower model on a large
   prompt fails the job rather than waiting.
-- **Docker, PostgreSQL and a real model runtime remain unverified here** (see §7).
+- **Docker and PostgreSQL remain unverified here, and the real-model run used the 3B variant of the
+  default model** (see §7).
 
 ## 6. Files added or changed
 
@@ -240,6 +272,8 @@ docs/screenshots/ai-investigation-claims.png
 docs/screenshots/ai-investigation-diagnostics.png
 docs/screenshots/ai-investigation-evidence.png
 docs/screenshots/ai-investigation-provenance.png
+docs/screenshots/ai-investigation-real-model.png
+docs/screenshots/ai-investigation-real-model-provenance.png
 ```
 
 **Changed**
@@ -248,6 +282,7 @@ docs/screenshots/ai-investigation-provenance.png
 backend/src/main/java/dev/repopilot/ai/AiConfiguration.java
 backend/src/main/java/dev/repopilot/ai/AiProviderRegistry.java
 backend/src/main/java/dev/repopilot/codeindex/persistence/SourceFileRepository.java
+backend/src/test/java/dev/repopilot/**/*IntegrationTest.java   ← 9 classes: dispatcher initial delay disabled
 frontend/src/components/AppShell.tsx
 frontend/src/components/destinations.ts
 frontend/src/hooks/queries.ts
@@ -275,13 +310,23 @@ docs/screenshots/capability-not-available.png   ← every destination now has a 
 | Backend suite | `.\mvnw.cmd -B test` (from `backend/`) | **229 tests in 35 classes, 0 failures, 0 errors**, `BUILD SUCCESS`. Phase 7 added 46: 13 citation, 14 parser, 6 prompt, 6 tokens, 4 integration, 2 citation integration, 1 provider-unavailable |
 | Type check | `npx tsc --noEmit` | clean under strict settings |
 | Production build | `vite build` | 118 modules, 377.20 kB JS (109.60 kB gzip), no warnings |
-| Live smoke test | `scripts/smoke-test.ps1` | **352 checks, 0 failures, 0 skipped** (was 311; the new section is 41 investigation checks, including the retrieval-summary count, the excerpt-text absence, `E\d+` keys all cited, cross-repository `404`, stop-word `400`, cancel `202 → CANCELLED → 409`, and an unauthenticated `401`) |
+| Live smoke test | `scripts/smoke-test.ps1` | **355 checks, 0 failures, 0 skipped** against the deterministic extractor (was 311; the investigation section is now 44 checks, including the retrieval-summary count, the excerpt-text absence, `E\d+` keys all cited, cross-repository `404`, stop-word `400`, cancel `202 → CANCELLED → 409`, and an unauthenticated `401`). **351 checks, 0 failures, 0 skipped** against Ollama (40 investigation checks) — four fewer because "every claim is VERIFIED", "no claim is unsupported/partly supported", "every item in the prompt was cited" and "the investigation records what it could not answer" are extractor-only assertions |
 | Live investigation | `POST …/investigations` on the quality fixture | "Which findings describe the empty catch in OrderImporter?" → job `SUCCEEDED`; **12 evidence / 12 claims / 12 verified**, `grounded: true`, prompt **8 690 chars** (**6 630** evidence), SHA-256 `af428b…`, retrieval **3 findings, 6 symbols, 2 files, 1 repository** |
 | Live investigation, smaller set | a second question | **4 evidence / 4 verified**, prompt 3 119 chars (1 081 evidence), `grounded: true` |
+| Live investigation, real model | Ollama 0.40.7, `qwen2.5-coder:3b`, CPU-only | "Why is the empty catch in OrderImporter a correctness problem?" → `SUCCEEDED`, **grounded**, 1 claim `VERIFIED`, 12 evidence (3 findings, 6 symbols, 2 files, repository summary), prompt 8 698 chars (6 630 evidence), provider latency **78 710 ms** |
+| Live investigation, real model, after the schema fix | same server | "What does the catch block in OrderImporter do with a failed row?" → `SUCCEEDED`, **grounded**, 1 claim `VERIFIED`, 12 evidence (3 findings, 6 symbols, 2 files, repository summary), prompt **8 981 chars** (**6 566** evidence), SHA-256 `8ce989…`, latency **75 658 ms** |
 | Evidence discipline | live API read | no `excerpt` or `excerptSha256` field in any response; `E10`/`E11` carry a path but `NO_LOCATION` (nothing to re-read), `E12` is the repository summary and is cited |
 | Citation chip | headless Chrome, real page | `[E7]` click: `scrollTop` 4 525 → 3 867, row at 447–609 of a 1 000 px viewport, `evidence-flash` applied, cleared after 2.4 s |
-| Frontend, live | Vite dev server + running backend | page renders at 1 060 px (single column) and at 1 440 px (two columns); six screenshots captured |
+| Frontend, live | Vite dev server + running backend | page renders at 1 060 px (single column) and at 1 440 px (two columns); six screenshots of the extractor path and two of the real-model path |
 | Refusals | live API | stop-word question → `400 VALIDATION_FAILED` ("names nothing to search for"); cross-repository read → `404`; cancelling a finished investigation → `409`; no bearer token → `401` |
+
+**The real-model run.** Ollama 0.40.7 (official per-user installer) on `127.0.0.1:11434`, model
+`qwen2.5-coder:3b` (1.9 GB). The app ran with `REPOPILOT_AI_PROVIDER=ollama` and the shipped defaults:
+120 s provider timeout, 1 500 completion tokens, temperature 0.1, JSON mode. Hardware: Intel i5-1335U,
+15.7 GB RAM, Intel Iris Xe — no GPU offload, so generation runs on the CPU. A direct call to the model
+returned 116 tokens in 24.6 s; the in-app provider latency above (54–79 s) covers the larger prompt and,
+on the first call, loading the model. The model answered the strict JSON contract without truncation,
+and the citation checker verified every claim it wrote.
 
 **How the screenshots were taken.** The interactive browser pane's window was not visible in this
 session (`browser.screenshot` refuses without one), and a screenshot of a page that is not really
@@ -289,17 +334,21 @@ rendered would be a lie. The page was therefore rendered in headless Chrome at a
 captured over the DevTools protocol, with the token seeded into `sessionStorage` exactly as the
 sign-in screen stores it; the question at the top of the history was typed into the form and
 submitted there. The chip behaviour above was measured in that same rendered page. The temporary
-capture script lives outside the repository and is not part of the build.
+capture script lives outside the repository and is not part of the build. The two
+`ai-investigation-real-model*.png` shots were taken the same way against the Ollama-backed server, after
+a question submitted in the form returned a verdict. The six extractor-path shots predate decision 15,
+which changed the prompt's schema wording, so the prompt size they record (8 690 characters) is the
+pre-fix value; the screen itself did not change.
 
 **Not verified here, and why**
 
 - **`docker compose up --build`** — no Docker daemon in this environment.
 - **PostgreSQL** — never executed; `V6` is written to be portable and is exercised on H2 in
   PostgreSQL-compatibility mode only.
-- **A real model answering** — Ollama is not installed (`127.0.0.1:11434` refuses connections). The
-  ungrounded path is covered by `InvestigationCitationIntegrationTest` with a scripted provider, and
-  the whole vertical slice by the deterministic extractor; neither is evidence that a real model
-  behaves well.
+- **The default `qwen2.5-coder:7b`** — only the 3B variant was pulled and run. A 3B answer already used
+  54–79 s of the 120 s provider timeout on this CPU-only machine, so the 7B default was not attempted
+  rather than run into a foreseeable timeout. The 3B result is evidence that the path works end to end;
+  it is not evidence that the shipped default performs acceptably on hardware like this.
 - **A citation that changes under the answer** (`CHANGED`) — the verdict is decided by
   `SourceVerifier` re-reading and re-hashing the range, and the mapping from that status to a claim
   verdict is covered by `CitationValidatorTest`; the live path has only ever observed `CONFIRMED`
@@ -311,5 +360,6 @@ capture script lives outside the repository and is not part of the build.
 **Phase 8 — recommendations, and the release seams.** The last declared capability with no backend
 is `RECOMMENDATION_*`: a proposed patch attached to a finding or an investigation, stored, reviewed
 by a human, and never applied automatically. The other half of the phase is the two seams this
-environment cannot exercise — a real PostgreSQL and a real Ollama — plus `docker compose up --build`,
-so the product's three "not verified here" rows can become verified or be narrowed honestly.
+environment cannot exercise — a real PostgreSQL and a real Ollama with the shipped 7B default — plus
+`docker compose up --build`, so the remaining "not verified here" rows can become verified or be
+narrowed honestly.

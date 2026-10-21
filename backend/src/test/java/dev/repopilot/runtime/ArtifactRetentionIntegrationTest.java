@@ -69,6 +69,7 @@ import static org.hamcrest.Matchers.containsString;
         "repopilot.security.token=integration-test-bearer-token-0007",
         "repopilot.ai.enabled=false",
         "repopilot.jobs.dispatch-interval-millis=3600000",
+        "repopilot.jobs.dispatch-initial-delay-millis=3600000",
         "repopilot.storage.retention-days=0",
         "repopilot.storage.retention-sweep-interval-millis=3600000",
         "repopilot.storage.retention-initial-delay-millis=3600000"

@@ -50,7 +50,8 @@ import static org.assertj.core.api.Assertions.assertThat;
         "repopilot.security.token=integration-test-bearer-token-0007",
         "repopilot.ai.enabled=true",
         "repopilot.ai.provider=deterministic",
-        "repopilot.jobs.dispatch-interval-millis=3600000"
+        "repopilot.jobs.dispatch-interval-millis=3600000",
+        "repopilot.jobs.dispatch-initial-delay-millis=3600000"
 })
 @AutoConfigureWebTestClient
 class InvestigationIntegrationTest {

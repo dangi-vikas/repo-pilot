@@ -56,6 +56,7 @@ import static org.hamcrest.Matchers.containsString;
         "repopilot.security.token=upload-limit-test-bearer-token-0004",
         "repopilot.ai.enabled=false",
         "repopilot.jobs.dispatch-interval-millis=3600000",
+        "repopilot.jobs.dispatch-initial-delay-millis=3600000",
         // Deliberately tiny, so the boundary is reachable rather than theoretical.
         "repopilot.analysis.max-artifact-size-bytes=4096",
         // Above the application limit but still tiny, so both layers are exercised in one context.
