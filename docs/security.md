@@ -198,12 +198,14 @@ misbehave ("ignore previous instructions and …"). Controls:
 3. **Bounded prompt budget.** A context character budget caps how much untrusted text can
    enter a prompt at once, limiting the room an injection has to work in.
 4. **Output is not trusted to name locations.** The model may cite a file and line; the
-   **backend validates every citation** against the index (the file exists in this
-   revision; the line is in range) before it is stored or shown. A fabricated location is
-   dropped, not displayed.
+   **backend validates every citation** against the index and the filesystem (the key was in
+   the prompt; the cited excerpt still hashes the same; any `path:line` the claim names is
+   covered by its own citation) before the answer is stored or shown. A claim that fails is
+   shown with an `UNSUPPORTED` verdict and makes the answer ungrounded; it is never displayed
+   as if the evidence supported it.
 5. **No tool execution.** Model output never triggers a shell command, a build, a file
-   write, or an API call. A `recommendation` is a *proposed* patch that a human reviews;
-   `applied` defaults to `false`.
+   write, or an API call. Nothing a model says is applied anywhere: the `recommendation` table
+   exists for the next phase and is not yet written to.
 6. **Redaction before persistence.** Detected secrets are redacted from analyzer output
    before it is stored or sent to a model (`repopilot.privacy.redact-detected-secrets`).
 
@@ -212,12 +214,34 @@ labelled as such and is not actionable on its own.
 
 ### Implementation status
 
-Controls 1–6 are the design of the investigation path, and **items 4 and 6 are not yet
-exercised**: no code assembles an investigation prompt or validates a citation, because the
-investigation flow is not implemented. They are stated here as the rules the implementation
-must satisfy, not as controls this snapshot enforces. What *is* enforced today is the read
-boundary (§4, §5) and the claim boundary: nothing in the API renders a model's assertion as
-an observation, because nothing asks a model anything yet.
+Controls 1–5 are implemented and exercised. The sixth is a property of the analysis path rather
+than a filter on prompt text, and the two qualifications below say what that means:
+
+- **The citation check is stronger than "the location exists".** A claim's key must have been in
+  the prompt; the cited excerpt is re-read from disk, through the sandbox and the recorded
+  revision, and its SHA-256 must match the one stored when it was sent
+  (`CONFIRMED` / `CHANGED` / `MISSING` / `NOT_LOCATED`); and any `path:line` the claim names in
+  its own sentence must be covered by the evidence it cites. A claim that cites nothing, cites a
+  key that was never sent, or names a location outside its citation is `UNSUPPORTED`, and one
+  failed claim makes the whole answer *ungrounded*.
+- **A grounded answer is still a model's answer.** An injection inside a source file can steer
+  what the model says, and the check cannot detect a plausible sentence built from real
+  evidence. What it does prevent is the failure that matters most in this feature: an answer
+  that invents a location, quotes a key it was never given, or cites evidence for a claim that
+  evidence does not support is shown as unsupported, and the whole answer is marked ungrounded.
+  The UI labels the answer as a hypothesis, lists what the investigation could not answer, and
+  never renders a claim as an observation.
+
+Redaction before persistence (control 6) protects stored analyzer output; it is not applied to
+prompt text. An investigation sends the excerpts it retrieved, so a secret written in a
+non-credential file could reach a *local* model. It can only leave the machine if the operator
+explicitly enabled a non-local provider (§7).
+
+The fence around an excerpt (` ``` `) is a formatting convention, not a security boundary: a file
+that contains a fence can end the quoting early. What that buys an attacker is influence over the
+*wording* of an answer, not over its citations — every claim still has to point at a key that was
+sent and at a line range that still hashes the same. That is why the check exists and why the
+answer is never rendered as an observation.
 
 ---
 
@@ -232,6 +256,14 @@ machine is the optional OpenAI-compatible provider, which is:
 Enabling it is an explicit, deliberate act by the operator. Logging of source content and
 prompts is off by default (`repopilot.privacy.log-source-content=false`,
 `log-prompts=false`) so code does not end up in logs read by log shippers.
+
+An investigation sends the prompt — the question, the numbered evidence and at most 24 lines
+of any one excerpt — to whichever provider is configured, and to nothing else. What is stored
+is the prompt's SHA-256 and length, and per cited item the SHA-256 of the exact excerpt sent;
+the prompt and the excerpt text are not persisted, so the database is not a copy of the source.
+The deterministic extractor is not a fallback that could silently receive code: it is selected
+only when the operator sets `repopilot.ai.provider=deterministic`, and it states in every
+answer that no model was called.
 
 ---
 
@@ -385,7 +417,11 @@ both immediately.
 - No static-analysis finding stores the value of a credential it reports.
 - Every stored static finding's cited location was checked against the text that was analysed
   before it was written.
-- Model output never executes and never names an unvalidated location.
+- Model output never executes, and a model's claim never renders as an observation: the prose
+  is labelled a hypothesis and each sentence carries the verdict of a citation check that
+  re-read the excerpt it cited.
+- Every excerpt sent to a model is hashed and never stored: the database keeps the hash, so a
+  citation can be re-checked without turning the schema into a prompt log.
 - No source leaves the machine unless the operator explicitly enables a cloud provider.
 - A recording never leaves the machine: it is read in process, under content-addressed storage
   that no client-supplied name can influence.
@@ -407,11 +443,16 @@ both immediately.
   redaction is a mitigation, not a proof).
 - Multi-user isolation; RepoPilot is a single-operator tool.
 - Resistance to a compromised JVM or operating system.
-- **The AI-related guarantees are design rules, not live behaviour.** The investigation flow
-  is not implemented, so prompt delimiting, output citation validation and redaction before
-  persistence are described here as requirements for it. The analysis-related controls in this
-  document *are* enforced and tested: the read boundary, the credential handling of `RP005`,
-  the in-process engine with no classpath, and the citation check on every stored finding.
+- **An investigation's controls are enforced, but its answers are not facts.** Prompt delimiting,
+  citation validation and the "model output is never an observation" rule are implemented and
+  asserted by tests; the read boundary, the credential handling of `RP005`, the in-process engine
+  with no classpath, and the citation check on every stored finding remain enforced as before.
+- **An investigation is only as good as its evidence.** Selection is deterministic name and
+  text matching, so a question that describes a subsystem without naming anything in it may
+  retrieve little, and the answer is then thin rather than wrong — the diagnostics say what was
+  retrieved and what was not. A grounded answer means the citations held up; it does not mean
+  the model's reasoning did, and an injected instruction inside a file can still shape what the
+  model says about real evidence.
 - **Analysis reads source as text and repeats what it finds.** A secret written in a file whose
   name is not credential-like will be read, and a rule may report its location (never its
   value). Redaction is a mitigation, not a proof.

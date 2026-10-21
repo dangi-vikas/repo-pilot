@@ -75,9 +75,9 @@ One deployable, organised by feature package (ADR 0001):
 | `dev.repopilot.repository` | Repository registration, sandbox validation, file enumeration, revision identity. |
 | `dev.repopilot.codeindex` | Parse Java, extract symbols/references/mappings, persist the index, resolve edges, answer code-intelligence queries. |
 | `dev.repopilot.analysis` | Static analysis: analyzers as pure functions over handed-in sources, the run/story of findings, citation verification, and the finding queries. |
-| `dev.repopilot.runtime` | Runtime evidence: artefact ingestion and content-addressed storage, JFR reading (`runtime.jfr`), measurement mapping, the `JFR_ANALYSIS` job, and the runtime query views. |
-| `dev.repopilot.ai` | Provider abstraction and registry (Ollama default). |
-| `dev.repopilot.investigation` *(planned)* | AI investigation lifecycle and evidence handling (`investigation*` tables exist; no code yet). |
+| `dev.repopilot.runtime` | Runtime evidence: artefact ingestion and content-addressed storage, the four readers (JFR, thread dumps, heap dumps, benchmark results), measurement mapping, their job handlers, retention, and the runtime query views. |
+| `dev.repopilot.ai` | Provider abstraction and registry: Ollama over its wire protocol, an optional OpenAI-compatible provider, and the deterministic extractor used for offline verification. |
+| `dev.repopilot.investigation` | Investigation lifecycle and evidence handling: deterministic retrieval, prompt assembly, answer parsing, citation verification, grounding, and the investigation query views. |
 | `dev.repopilot.jobs` | Durable job lifecycle, dispatch, cancellation, retries, recovery. |
 | `dev.repopilot.security` | Bearer-token authentication and the token service. |
 | `dev.repopilot.api` | HTTP layer. The only boundary that talks to the outside. |
@@ -594,6 +594,51 @@ no analysis_run: nothing was read
    `retention:<repoId>:<yyyy-MM-dd>`, per-repository `try`/`catch`, and the window written into the
    job's parameters so the pass records the policy it ran under.
 
+### How an investigation is answered
+
+An investigation is the only path where a model writes prose, so it is also the only path that
+checks a sentence. The pipeline is fixed; the provider is the only swappable part:
+
+```text
+POST /repositories/{id}/investigations               ← question, optional scope
+  ▼
+400: fewer than 8 chars, or every token a stop word   ← no row is created
+409: no indexed revision
+503: no usable provider                                ← before the revision check
+  ▼
+job row (INVESTIGATION, QUEUED) → InvestigationJobHandler
+  │  1. retrieve evidence deterministically: findings (only if the newest
+  │     STATIC_ANALYSIS run analysed this revision), symbols, files, repository
+  │     summary; max 12 items, ranked, numbered E1…En
+  │  2. read excerpts through the sandbox and the recorded revision (24 lines / 1 200
+  │     chars); keep SHA-256 + length, hand the text to the provider
+  │  3. build a prompt ≤ 24 000 chars (included items only); hash it
+  │  4. call the provider outside any transaction (3 min ceiling, 1 500 tokens, JSON mode)
+  │  5. parse claims; for each: key in prompt, cites something, cited excerpt re-read
+  │     and re-hashed (CONFIRMED / CHANGED / MISSING / NOT_LOCATED), named path:line
+  │     covered by its own citation
+  │  6. grounded = ≥1 claim ∧ all VERIFIED ∧ no dangling [En]
+  ▼
+investigation + investigation_evidence + investigation_claim
+```
+
+1. **No model call happens without evidence.** If retrieval returns nothing usable — including the
+   case where the repository summary is the only candidate — the job fails before the provider is
+   called, and the failure says the index had nothing to search.
+2. **The answer is stored as written; the verdicts are stored beside it.** `investigation_claim`
+   holds the claim text and RepoPilot's verification status in separate columns. Nothing rewrites a
+   sentence that failed a check.
+3. **Parsed-but-ungrounded is a success.** The job did its work and the answer did not hold up, so
+   the investigation is `SUCCEEDED` with `grounded=false` and the per-claim verdicts explain why. A
+   provider that answers with non-JSON is also `SUCCEEDED`: its raw text is stored, no claims are
+   parsed, and the answer is ungrounded.
+4. **Cancellation is decided where it can be honoured.** A `QUEUED` investigation is marked
+   `CANCELLED` immediately; a `RUNNING` one stops at the handler's checkpoint; `begin()` refuses a
+   cancelled investigation and `complete()` discards late answers, so a cancelled investigation is
+   never resurrected.
+5. **Nothing about the prompt is stored except its identity.** `prompt_sha256`, `prompt_chars` and
+   `context_chars` are kept; the prompt itself is not, because it contains source excerpts.
+
 ---
 
 ## 8. Data model
@@ -623,8 +668,13 @@ so migrations stay additive. Key tables:
   rather than of an enum's ordinal. A fingerprint unique per `(analysis_run_id, fingerprint)`
   makes the same rule and location deduplicated within a run, and a re-run a new row set under
   a new run.
-- `investigation`, `investigation_evidence`, `investigation_message` model the AI
-  investigation and the exact evidence handed to or cited by the model.
+- `investigation`, `investigation_evidence` and `investigation_claim` model one answer:
+  what was asked, the numbered evidence handed to the model (with the excerpt's hash and
+  length, never the excerpt), the prompt's identity, the diagnostics, and one row per
+  claim carrying the sentence as written beside RepoPilot's verdict. `V6__investigation_citations.sql`
+  adds the key, the excerpt hash, the source status and the claims table;
+  `investigation_message` remains unused — a conversation history was never needed, and the
+  migration is additive rather than rewritten.
 - `recommendation` holds a proposed patch; it is never applied automatically.
 - `benchmark_run` is **unused**: benchmark results are stored as `runtime_measurement` rows under
   the `benchmark.` namespace, like every other reader's output, so one measurements table answers
@@ -689,10 +739,10 @@ What has actually been run against this snapshot, and what has not:
 
 | Area | Status |
 | --- | --- |
-| Backend test suite | 183 tests, 28 classes, all passing (JUnit 5, H2 for the `local` profile, real Spring contexts) |
-| Frontend | `tsc --noEmit` clean under strict settings; production build succeeds (117 modules, 358.03 kB JS / 104.89 kB gzip) |
-| Live end-to-end | Indexing, Code Explorer (including findings), Dependency Graph, Performance Lab, Concurrency Inspector, Memory Analysis, Analysis History, Settings (including artefact retention) and the command palette exercised against a running backend on Windows |
-| Smoke test | 311 checks against a live server, 0 failures (readiness, registration, indexing, code intelligence, static analysis, the finding evidence contract, runtime evidence from four readers including all of their refusals, a real thread dump and a real 179 MB heap dump taken from the backend under test, a recorded two-fork JMH result, the retention plan and the refusals around it, and — when the data directory is known — six checks that inspect the artefact store on disk) |
+| Backend test suite | 229 tests, 35 classes, all passing (JUnit 5, H2 for the `local` profile, real Spring contexts) |
+| Frontend | `tsc --noEmit` clean under strict settings; production build succeeds (118 modules, 377.20 kB JS / 109.60 kB gzip) |
+| Live end-to-end | Indexing, Code Explorer (including findings), Dependency Graph, Performance Lab, Concurrency Inspector, Memory Analysis, AI Investigation, Analysis History, Settings (including artefact retention) and the command palette exercised against a running backend on Windows |
+| Smoke test | 352 checks against a live server, 0 failures (readiness, registration, indexing, code intelligence, static analysis, the finding evidence contract, runtime evidence from four readers including all of their refusals, a real thread dump and a real 179 MB heap dump taken from the backend under test, a recorded two-fork JMH result, the retention plan and the refusals around it, 41 investigation checks including an answer read back claim by claim and a question cancelled while still queued, and — when the data directory is known — six checks that inspect the artefact store on disk) |
 | Benchmark corpus | 3 002 Java files indexed (16 205 symbols, 105 001 references) and analysed in 118 s for 600 findings; spans recorded in [`corpus/RESULTS.md`](../corpus/RESULTS.md) |
 | Static analysis | **Verified.** Built-in rules and PMD run as a durable job; every stored finding passed its citation check; filters, tallies, run scoping and append-only re-runs asserted in the smoke test and the integration test |
 | Runtime evidence (JFR) | **Verified.** A live recording was uploaded, stored by hash, read by a durable job and queried back: 101 measurements with units, kinds, reductions and provenance. Refusals (bad header, unreadable type, pathological filename, both upload limits), deduplication, reproducibility and the removal of a deleted repository's bytes are asserted in the smoke test (69 new checks) and `RuntimeAnalysisIntegrationTest` / `RuntimeUploadLimitIntegrationTest` |
@@ -700,7 +750,7 @@ What has actually been run against this snapshot, and what has not:
 | Runtime evidence (benchmark results) | **Verified.** Two real JMH runs (one fork and two forks, 14 entries each, three modes, a two-valued parameter) were uploaded, stored by hash, imported by a durable job and queried back: 254 and 277 measurements, every value `AS_REPORTED` with the harness's own unit, the score checked against the 6 recorded per-iteration values where the file has them and `NOT_CHECKABLE` where it does not, `jvmArgs` counted and not stored, no baseline and no comparison. A JSON array that is not a result file uploads and then fails naming the missing field; CSV and text output are refused at upload with the command that produces a readable file. Asserted in `BenchmarkImportIntegrationTest`, three unit-test classes and the smoke test |
 | SpotBugs | **Not implemented.** Needs bytecode; `compiledClassesPresent` is recorded per revision so it will report *not applicable* rather than a pass |
 | Runtime evidence (heap dumps) | **Verified.** Two real HPROF dumps (a purpose-built 10 MB subject and a 179 MB `GC.heap_dump` of this backend taken by the smoke test) were uploaded, stored by hash, read by a durable job and queried back: 61 measurements per dump, with the census, the `TOP_N = 20` type tables, the GC-root kinds and the largest single object. Object counts for `byte[]` and `java.lang.String` agree exactly with `jcmd GC.class_histogram`; the byte figures deliberately do not, and every byte row carries its basis. A class histogram, a gzip stream and a thread dump are refused by name at upload. The census arithmetic, the basis on every byte row and the cross-reader "newest runtime evidence" query are asserted in the smoke test (73 checks) and `HeapDumpAnalysisIntegrationTest` |
-| AI investigation | **Not implemented.** The job type is declared; submitting it returns `UNSUPPORTED_INPUT` |
+| AI investigation | **Verified, with the deterministic extractor.** A question retrieves a numbered evidence set deterministically (3 findings, 6 symbols, 2 files and the repository summary on the quality fixture), the provider's claims are checked against the index, and every citation is re-read and re-hashed: 12 of 12 claims `VERIFIED`, answer grounded, prompt hashed at 8 690 characters. The ungrounded path — a key never sent, a claim citing nothing, a `path:line` its evidence does not cover and a dangling `[En]` — is driven by a scripted provider in `InvestigationCitationIntegrationTest`; the no-evidence and no-provider paths fail without calling a model. A question that names nothing is refused `400` before any row exists, and a queued investigation can be cancelled. **Ollama is not installed in this environment, so no real model has answered.** |
 | Age-based artefact retention | **Verified.** A pass removes the stored file of an artefact past the window and marks the row; the run and every measurement are kept. The plan is computed live (candidates, bytes, measurements kept), a zero-day window is refused with `400 VALIDATION_FAILED`, a window that nothing is past reports "Nothing to purge", re-uploading the same bytes clears `purged_at`, and analysing a purged artefact is a `409`. The scheduler queues one pass per repository per day and skips repositories with active jobs. Asserted in `ArtifactRetentionIntegrationTest`, `RetentionSchedulerTest` and the smoke test |
 | PostgreSQL | **Not verified.** Migrations are written to be portable and are exercised on H2 in PostgreSQL-compatibility mode only |
 | `docker compose up --build` | **Not verified.** There is no Docker daemon in the environment this snapshot was built in; the images and Compose file are written and reviewed but never executed |

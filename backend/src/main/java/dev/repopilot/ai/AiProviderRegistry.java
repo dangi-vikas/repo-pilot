@@ -118,6 +118,20 @@ public class AiProviderRegistry {
         return properties.enabled();
     }
 
+    /**
+     * A user-facing explanation for "there is no provider to call", naming the provider and the
+     * setting that selects it. Shared by the exception path and by pre-flight checks, so a
+     * refused investigation and a failed one say the same thing.
+     */
+    public String unavailableMessage() {
+        if (!properties.enabled()) {
+            return "AI features are disabled. Set repopilot.ai.enabled=true to enable investigations.";
+        }
+        return "The configured AI provider '" + activeProviderId() + "' is not available in this "
+                + "installation. Check repopilot.ai.provider and repopilot.ai.base-url, and make sure "
+                + "the provider is running.";
+    }
+
     /** Provider ids that were successfully constructed. */
     public List<String> availableProviderIds() {
         return List.copyOf(providers.keySet());
@@ -136,11 +150,7 @@ public class AiProviderRegistry {
      */
     public Mono<ChatCompletion> complete(ChatRequest request) {
         AiProvider provider = active().orElseThrow(() -> new AiProviderException(
-                AiFailureKind.NOT_CONFIGURED, activeProviderId(),
-                properties.enabled()
-                        ? "The configured AI provider '" + activeProviderId() + "' is not available. "
-                          + "Check repopilot.ai.provider and repopilot.ai.base-url."
-                        : "AI features are disabled. Set repopilot.ai.enabled=true to enable investigations."));
+                AiFailureKind.NOT_CONFIGURED, activeProviderId(), unavailableMessage()));
 
         return Mono.defer(() -> provider.complete(request))
                 .transformDeferred(CircuitBreakerOperator.of(circuitBreaker))

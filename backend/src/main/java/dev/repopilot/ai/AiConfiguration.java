@@ -1,6 +1,7 @@
 package dev.repopilot.ai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.repopilot.ai.deterministic.DeterministicAiProvider;
 import dev.repopilot.ai.ollama.OllamaAiProvider;
 import dev.repopilot.config.RepoPilotProperties;
 import org.slf4j.Logger;
@@ -31,5 +32,19 @@ public class AiConfiguration {
                                       ObjectMapper objectMapper,
                                       RepoPilotProperties properties) {
         return new OllamaAiProvider(builder, objectMapper, properties.ai());
+    }
+
+    /**
+     * The deterministic extractor: an {@link dev.repopilot.ai.AiProvider} that quotes retrieved
+     * evidence and calls no model.
+     *
+     * <p>Constructed always, selected only when {@code repopilot.ai.provider=deterministic}. It
+     * exists so the retrieval and citation-checking pipeline can be exercised where no model
+     * runtime is installed; it never claims to reason, and every answer it produces says so in
+     * its own limitations field.
+     */
+    @Bean
+    DeterministicAiProvider deterministicAiProvider(ObjectMapper objectMapper) {
+        return new DeterministicAiProvider(objectMapper);
     }
 }

@@ -7,6 +7,7 @@ import { NavRail } from "@/components/NavRail";
 import { TopBar } from "@/components/TopBar";
 import { AnalysisHistoryPage } from "@/pages/AnalysisHistoryPage";
 import { CapabilityPage } from "@/pages/CapabilityPage";
+import { InvestigationPage } from "@/pages/InvestigationPage";
 import { CodeExplorerPage } from "@/pages/CodeExplorerPage";
 import { ConcurrencyInspectorPage } from "@/pages/ConcurrencyInspectorPage";
 import { DependencyGraphPage } from "@/pages/DependencyGraphPage";
@@ -50,6 +51,8 @@ function elementFor(destinationId: string) {
       return <MemoryPage />;
     case "history":
       return <AnalysisHistoryPage />;
+    case "investigation":
+      return <InvestigationPage />;
     case "settings":
       return <SettingsPage />;
     default:

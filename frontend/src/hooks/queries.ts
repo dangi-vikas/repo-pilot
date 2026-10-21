@@ -15,6 +15,9 @@ import type {
   FindingView,
   GraphView,
   HealthStatus,
+  InvestigationDetail,
+  InvestigationSubmission,
+  InvestigationSummary,
   JobCounters,
   JobStatus,
   JobView,
@@ -501,6 +504,69 @@ export function useDeleteRepository() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["repositories"] });
       void queryClient.invalidateQueries({ queryKey: ["overview"] });
+    },
+  });
+}
+
+/**
+ * The investigation list for one repository.
+ *
+ * Polls only while something is in flight. The list is a record of questions and verdicts, so a
+ * background refresh is honest work while an answer is being produced and pointless noise after.
+ */
+export function useInvestigations(
+  repositoryId: Uuid | null,
+  options: { refetchWhileActive?: boolean } = {},
+) {
+  return useQuery<PageResponse<InvestigationSummary>>({
+    queryKey: ["investigations", repositoryId],
+    queryFn: ({ signal }) => api.investigations(repositoryId as Uuid, signal),
+    enabled: repositoryId !== null,
+    refetchInterval: options.refetchWhileActive === true ? 2_500 : false,
+    ...guard(),
+  });
+}
+
+/** One investigation with its evidence, claims and diagnostics. */
+export function useInvestigation(
+  repositoryId: Uuid | null,
+  investigationId: Uuid | null,
+  options: { refetchWhileActive?: boolean } = {},
+) {
+  return useQuery<InvestigationDetail>({
+    queryKey: ["investigation", repositoryId, investigationId],
+    queryFn: ({ signal }) =>
+      api.investigation(repositoryId as Uuid, investigationId as Uuid, signal),
+    enabled: repositoryId !== null && investigationId !== null,
+    refetchInterval: options.refetchWhileActive === true ? 2_500 : false,
+    ...guard(),
+  });
+}
+
+/** Asks a question. The answer arrives through the detail query once the job has run. */
+export function useAskInvestigation(repositoryId: Uuid | null) {
+  const queryClient = useQueryClient();
+  return useMutation<InvestigationSubmission, unknown, { question: string; scope?: string }>({
+    mutationFn: ({ question, scope }) =>
+      api.askInvestigation(repositoryId as Uuid, question, scope),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["investigations", repositoryId] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["job-counters"] });
+    },
+  });
+}
+
+/** Cancels an investigation that is queued or running. */
+export function useCancelInvestigation(repositoryId: Uuid | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (investigationId: Uuid) =>
+      api.cancelInvestigation(repositoryId as Uuid, investigationId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["investigations", repositoryId] });
+      void queryClient.invalidateQueries({ queryKey: ["investigation"] });
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
   });
 }

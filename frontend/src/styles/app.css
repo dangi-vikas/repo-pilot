@@ -1436,3 +1436,57 @@ details.disclosure[open] > summary::before {
   color: var(--text-secondary);
   overflow-wrap: anywhere;
 }
+
+/* ======================================================== investigation */
+
+/*
+ * The model's answer is shown as stored: pre-wrapped, no Markdown renderer, no link execution.
+ * A renderer would hide the [En] markers inside formatting and could act on text the model wrote.
+ */
+.answer-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+  line-height: 1.65;
+  color: var(--text-primary);
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-raised);
+}
+
+/* A citation marker is a control, not decoration: it takes the reader to the evidence row. */
+.citation-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  margin: 0 2px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent);
+  background: var(--accent-muted);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  cursor: pointer;
+}
+.citation-chip:hover {
+  filter: brightness(1.15);
+}
+.citation-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Brief highlight after a citation is followed, so the target is findable in a long table. */
+.evidence-flash > td {
+  animation: evidence-flash 2.4s ease-out;
+}
+@keyframes evidence-flash {
+  0% {
+    background-color: var(--accent-muted);
+  }
+  100% {
+    background-color: transparent;
+  }
+}

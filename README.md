@@ -41,10 +41,14 @@ against indexed evidence by the backend before you see it.
 | [Performance Lab — benchmark provenance](docs/screenshots/performance-lab-benchmark-provenance.png) | JMH `1.37` on JDK `21.0.5`, the three modes, `jvmArgs` `0 in the file, none stored` with the reason, `6` entries with no per-iteration values, and *comparisons made: no* |
 | [Performance Lab — a quoted score](docs/screenshots/performance-lab-benchmark-measurements.png) | One score expanded: `10.359 ops/us`, reduction `as reported`, and the basis — *"quoted from the benchmark result file … No threshold was applied and no severity was assigned"* — beside the check that it is the mean of the 6 per-iteration values across 2 forks |
 | [Performance Lab — the artefact](docs/screenshots/performance-lab-benchmark-artifact.png) | `BENCHMARK RESULT`, `277` measurements from one file, and the job list now naming `BENCHMARK_IMPORT` alongside the three other runtime readers |
+| [AI Investigation](docs/screenshots/ai-investigation-ask.png) | The composer, the provider line, and this repository's questions with the verdict each one reached |
+| [AI Investigation — a grounded answer](docs/screenshots/ai-investigation-verdict.png) | `SUCCEEDED · GROUNDED`, `12 EVIDENCE ITEMS`, the notice that no model was called, and every `[En]` in the prose is a chip that jumps to its evidence row |
+| [AI Investigation — claims and verdicts](docs/screenshots/ai-investigation-claims.png) | Each claim exactly as the model wrote it, the evidence it cited, and its verdict. One failed citation makes the whole answer ungrounded; the sentence is still shown |
+| [AI Investigation — the evidence](docs/screenshots/ai-investigation-evidence.png) | `E1…E12` with rule, location and `SOURCE CHECKED`: *confirmed* is the cited excerpt re-read and re-hashed; *no location* is an item with no line to re-read |
+| [AI Investigation — provenance](docs/screenshots/ai-investigation-provenance.png) | The prompt's size and SHA-256 instead of the prompt, `12 item(s) of evidence (3 findings, 6 symbols, 2 files, 1 repository)`, and why an excerpt hash is kept instead of the excerpt |
 | [Settings](docs/screenshots/settings.png) | Connection, sandbox roots, AI provider status, privacy controls |
 | [Settings — artefact retention](docs/screenshots/settings-retention.png) | The window (`30` days), what is stored (`1 (281 KB)`), what a pass would remove, and *"Nothing is past this window"* instead of a bare empty table |
 | [Command palette](docs/screenshots/command-palette.png) | `Ctrl K` |
-| [Capability page](docs/screenshots/capability-not-available.png) | What an unimplemented destination says instead of showing empty results |
 | [Overview](docs/screenshots/overview.png) | Repository inventory, job activity and system status |
 
 ---
@@ -106,17 +110,17 @@ rather than pretending.
 | Concurrency Inspector | **Working** | One analysed dump: states with share bars and the `RUNNABLE` caveat, deadlock cycles as thread → monitor → holder, the contention table, and the depth/held maxima. No thresholds, no severity |
 | Runtime evidence — heap dumps | **Working** | The binary HPROF file `jmap`, `jcmd GC.heap_dump` and the OOM hook write, read in two passes: the class table, then the heap. A gzip stream, a class histogram and a thread dump are each refused by name, with the command that produces a readable file ([ADR 0010](docs/adr/0010-heap-dump-evidence.md)) |
 | Memory Analysis | **Working** | One analysed dump: the census (instances, arrays and their recorded bytes), the two type tables with their shares and the `TOP_N = 20` disclosure, the GC roots by kind, and the largest single object. **No retained size, no leak verdict, no threshold, no severity** — every byte row states its basis |
-| [Local AI provider abstraction](docs/adr/0002-local-first-ai.md) | **Partial** | Ollama client, health, capability reporting. No investigation flow yet |
+| [Local AI provider abstraction](docs/adr/0002-local-first-ai.md) | **Working** | Ollama over the wire protocol, health and capability reporting, plus an explicitly-configured deterministic extractor for offline verification. No paid API |
 | Runtime evidence — benchmark results | **Working** | The JSON array `-rf json` writes, from JMH and harnesses that follow it. Every score, error, confidence bound and percentile is quoted `AS_REPORTED` with the harness's own unit; the JVM's arguments are counted and not stored ([ADR 0011](docs/adr/0011-benchmark-evidence.md)) |
 | Benchmark import in the UI | **Working** | The run card says the figures are the harness's, not this build's; provenance lists modes, parameters, iteration times, JMH and JDK versions, and *comparisons made: no* |
 | Artefact retention | **Working** | A purge removes the stored **file** of an artefact past the window; the row, the run and every measurement are kept. The plan is computed live and *is* the dry run; a zero-day window is refused rather than read as "everything" ([ADR 0012](docs/adr/0012-artefact-retention.md)) |
 | Benchmark regression / baseline view | **Not yet, by design** | One upload states one run, and RepoPilot holds no baseline to compare it with. Nothing in the product claims a delta it did not measure |
-| AI investigation with citation checking | **Not yet** | The evidence rules are designed; the flow is not implemented |
+| AI investigation with citation checking | **Working** | A question retrieves a bounded, numbered evidence set deterministically (`E1…E12`), the provider answers from it, and the backend re-reads every cited excerpt and re-hashes it before anything is displayed. One unsupported claim makes the answer *ungrounded*; the prose is never rewritten ([ADR 0013](docs/adr/0013-ai-investigation.md)) |
 | Embeddings / pgvector | **Not yet** | Off by default; deliberately not started without a proven need |
 
 Submitting a job type that has no handler returns a clear `UNSUPPORTED_INPUT` error instead
-of queueing work that can never run. The one destination without a backend — AI investigation —
-renders an explicit capability page.
+of queueing work that can never run. Every one of the nine destinations now has a backend
+behind it; the capability-page fallback in the shell remains for future work.
 
 ---
 
@@ -241,8 +245,11 @@ The rules that make the four claim types distinguishable:
   is checked against the text that was analysed before it is stored, and each finding is
   stamped `SOURCE_CONFIRMED` (the cited lines exist), `LOCATION_STALE` (the rule reported a
   line the file does not have — a defect in the rule, shown loudly rather than clamped into
-  range) or `NO_LOCATION_CLAIMED`. *(For model output the same check is designed but not
-  implemented: the AI investigation flow does not exist yet.)*
+  range) or `NO_LOCATION_CLAIMED`. Model output goes through the same idea in a different
+  shape: every `[En]` a claim cites must have been in the prompt, the cited excerpt is re-read
+  from disk and re-hashed (`CONFIRMED` / `CHANGED` / `MISSING` / `NOT_LOCATED`), and any
+  `path:line` a claim names must be covered by its own citation. A finding is confirmed line
+  by line; an investigation is confirmed citation by citation.
 - **A finding states what it cannot see.** `limitations` is required and non-blank on every
   finding, and the UI renders it beside the recommendation, because a rule's boundary is part
   of its claim rather than a footnote to it.
@@ -575,6 +582,12 @@ posture is documented in [docs/security.md](docs/security.md); the rules that ma
   anywhere — the only thing stored from it is the census and, per type row, the type's own name.
   A benchmark result is parsed in process and only its quoted figures are stored; the file's
   command line and JVM path are not.
+- **An investigation sends only what it numbered.** The prompt holds the question, the numbered
+  evidence, and at most 24 lines of any one excerpt; it goes to the provider you configured and
+  nowhere else. What is stored is the prompt's SHA-256 and its character count, plus, per cited
+  item, the SHA-256 of the exact lines that were sent — never the excerpt text and never the
+  prompt. The provenance names the provider and model that answered, and the deterministic
+  extractor states in its own words that no model was called.
 
 ---
 
@@ -592,11 +605,12 @@ backend/                     Spring Boot 3.5 · Java 21 · WebFlux + JPA
     jobs/                    durable queue, workers, lifecycle, handlers
     repository/              registration, revisions, sandbox, scan policy
     workspace/               workspace registration
-    ai/                      AiProvider abstraction (Ollama, OpenAI-compatible)
+    ai/                      AiProvider abstraction (Ollama, OpenAI-compatible, deterministic)
+    investigation/           evidence retrieval · prompt · answer parsing · citation checks
     security/                bearer auth, rate limiting, startup validation
     observability/           health indicators, metrics, tracing
     shared/                  clock, errors, correlation ids, persistence base
-  src/main/resources/db/migration/   Flyway migrations (V1–V5)
+  src/main/resources/db/migration/   Flyway migrations (V1–V6)
 frontend/                    React 18 · TypeScript (strict) · Vite
   src/pages/                 the nine destinations
   src/components/            shell, palette, dialogs, tables, code view
@@ -642,6 +656,7 @@ Architecture decisions are recorded as ADRs in [docs/adr](docs/adr):
 | [0010](docs/adr/0010-heap-dump-evidence.md) | Heap dumps: a census, not a memory model — recorded bytes with a stated basis, no retained size |
 | [0011](docs/adr/0011-benchmark-evidence.md) | Benchmark results: quote the harness, apply no threshold, compare nothing |
 | [0012](docs/adr/0012-artefact-retention.md) | Artefact retention: the file goes, the evidence stays |
+| [0013](docs/adr/0013-ai-investigation.md) | AI investigation: an answer is a set of checked citations, not a paragraph |
 
 Further reading:
 
@@ -661,10 +676,17 @@ Stated plainly, because a tool that hides these cannot be trusted with the other
 - **Static analysis covers Java, and only Java.** PMD is given no classpath and runs a
   single-threaded in-process ruleset, so rules that need type resolution cannot match. The
   built-in rules are name- and shape-based, and each finding says so in `limitations`.
-- **SpotBugs and AI investigation are not implemented yet.** The
-  job types and the evidence rules exist; the handlers do not. Those screens say so. Every
-  runtime artefact type now has a reader, and a type the API does not know is refused as a bad
-  request at upload rather than stored unread.
+- **SpotBugs is not implemented yet.** It needs bytecode, and RepoPilot does not compile
+  repositories behind your back. The job type and the evidence contract exist; the handler does
+  not, and the screen reports *not applicable* with the precondition attached rather than a
+  pass. Every runtime artefact type now has a reader, and a type the API does not know is
+  refused as a bad request at upload rather than stored unread.
+- **An investigation is limited by what it retrieved.** Selection is name and text matching
+  over the index — no embeddings, no semantic search — so a question that *describes* a
+  subsystem without naming anything in it may retrieve little. The screen says so and the
+  diagnostics list what the model was not shown. A grounded answer means the citations held up,
+  not that the reasoning was right, and the answer never hides a claim that failed: it is shown
+  with its verdict beside it.
 - **A heap dump is a census, never a memory model.** There is no dominator tree, so there is no
   retained size, no leak verdict and no "this classloader is holding the heap" — a type near the
   top of the table is a type whose objects *hold a lot of recorded data*, and the table that says

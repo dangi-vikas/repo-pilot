@@ -81,7 +81,7 @@ export const DESTINATIONS: Destination[] = [
     icon: "sparkles",
     section: "Assist",
     description: "Ask questions grounded in indexed evidence, with citations checked.",
-    available: false,
+    available: true,
   },
   {
     id: "history",

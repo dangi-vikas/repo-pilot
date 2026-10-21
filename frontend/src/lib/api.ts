@@ -10,6 +10,9 @@ import type {
   FindingView,
   GraphView,
   HealthStatus,
+  InvestigationDetail,
+  InvestigationSubmission,
+  InvestigationSummary,
   JobCounters,
   JobStatus,
   JobView,
@@ -425,6 +428,47 @@ export const api = {
     request<JobView>(
       `${API}/repositories/${repositoryId}/runtime/retention/purge`,
       { method: "POST", body: { olderThanDays }, signal },
+    ),
+
+  // ---- investigations ----
+  /**
+   * A page of investigations for one repository, newest first.
+   *
+   * The list is a record, not a cache of answers: it is read again while a job is in flight so a
+   * queued investigation becomes an answer without the user reloading.
+   */
+  investigations: (repositoryId: Uuid, signal?: AbortSignal) =>
+    request<PageResponse<InvestigationSummary>>(
+      `${API}/repositories/${repositoryId}/investigations?size=50`,
+      { signal },
+    ),
+
+  investigation: (repositoryId: Uuid, investigationId: Uuid, signal?: AbortSignal) =>
+    request<InvestigationDetail>(
+      `${API}/repositories/${repositoryId}/investigations/${investigationId}`,
+      { signal },
+    ),
+
+  /**
+   * Asks a question. Returns the investigation and the job, not the answer: the answer arrives
+   * through the detail endpoint once the job has run, because a local model can take minutes.
+   */
+  askInvestigation: (
+    repositoryId: Uuid,
+    question: string,
+    scope?: string,
+    signal?: AbortSignal,
+  ) =>
+    request<InvestigationSubmission>(
+      `${API}/repositories/${repositoryId}/investigations`,
+      { method: "POST", body: { question, scope: scope?.trim() ? scope : null }, signal },
+    ),
+
+  /** Requests cancellation. The investigation becomes CANCELLED at its next checkpoint. */
+  cancelInvestigation: (repositoryId: Uuid, investigationId: Uuid, signal?: AbortSignal) =>
+    request<void>(
+      `${API}/repositories/${repositoryId}/investigations/${investigationId}/cancel`,
+      { method: "POST", body: {}, signal },
     ),
 
   // ---- jobs ----

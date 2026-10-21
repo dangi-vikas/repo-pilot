@@ -62,6 +62,16 @@
     re-upload restoring the artefact - needs a file older than the window and runs in
     ArtifactRetentionIntegrationTest, which backdates created_at rather than waiting thirty days.
 
+    Then AI investigation, when a provider is usable: a question about the fixture is asked, the
+    job is followed, and the answer is read back against RepoPilot's own rules. Every claim must
+    be verified, every cited key must have been in the prompt, the grounded flag must be true
+    because those held rather than because the answer read well, the prompt must be recorded as a
+    hash instead of the text, and no response field may carry an excerpt. A repository's id must
+    not read another repository's investigation, a question made only of stop words must be
+    refused before a job exists, and a cancelled investigation must stay cancelled. The section is
+    skipped, loudly, when no provider is reachable; the refusal path is asserted in
+    InvestigationProviderUnavailableIntegrationTest.
+
     When the data directory is known, it also checks the one thing the API cannot show:
     that deleting a repository removes the bytes it had stored, and leaves another
     repository's bytes alone. That check is skipped, loudly, when -DataDir is not given.
@@ -1481,6 +1491,149 @@ if ([string]::IsNullOrWhiteSpace($DataDir)) {
         "deleting one repository leaves another repository's bytes untouched"
     $gone = Get-ExpectingFailure "$api/repositories/$($disposable.id)"
     Assert-That ($gone.Status -eq 404) "the deleted repository is gone from the API"
+}
+
+# ---------------------------------------------------------------- investigations
+Write-Host "`n== AI investigations ==" -ForegroundColor Cyan
+if (-not $overview.ai.usable) {
+    # The section needs a provider. Without one the API refuses with 503, which is checked
+    # below only if a provider exists; running the whole section against a server with no model
+    # would report failures for a configuration choice rather than a defect.
+    Write-Host "  SKIPPED: no AI provider is usable on this server, so no investigation can run." -ForegroundColor Yellow
+    Write-Host "           Restart with REPOPILOT_AI_PROVIDER=deterministic (or a reachable" -ForegroundColor Yellow
+    Write-Host "           Ollama) to exercise this section. The offline path is asserted in" -ForegroundColor Yellow
+    Write-Host "           InvestigationProviderUnavailableIntegrationTest." -ForegroundColor Yellow
+    $skipped++
+} else {
+    Write-Host ("  provider: {0} (usable={1})" -f $overview.ai.providerId, $overview.ai.usable)
+
+    # The fixture carries one deliberate instance of every built-in rule, including the empty
+    # catch, so the question below has something to retrieve and the answer has something to cite.
+    $askBody = @{ question = "Why does the empty catch block in the fixture hide failures?" } |
+        ConvertTo-Json -Compress
+    $submission = Post-Json "$api/repositories/$($fixture.id)/investigations" $askBody
+    Assert-That (-not [string]::IsNullOrWhiteSpace($submission.investigationId)) `
+        "asking a question returns an investigation id"
+    Assert-That (-not [string]::IsNullOrWhiteSpace($submission.jobId)) `
+        "asking a question returns a job id, so the client can follow it"
+    Assert-That ($submission.status -eq "QUEUED") "the investigation starts QUEUED"
+
+    $investigationId = $submission.investigationId
+    $pending = Get-Json "$api/repositories/$($fixture.id)/investigations/$investigationId"
+    Assert-That (@("QUEUED", "RUNNING") -contains $pending.status) `
+        "the investigation is readable before the job finishes"
+    Assert-That ((Get-Prop $pending "answer") -eq $null) `
+        "an unfinished investigation has no answer, rather than an empty one"
+
+    $investigationJob = Wait-ForJob $submission.jobId 240
+    Assert-That ($investigationJob.status -eq "SUCCEEDED") `
+        "the investigation job succeeded (was: $($investigationJob.status))"
+    Write-Host ("  summary: {0}" -f $investigationJob.resultSummary)
+
+    $detail = Get-Json "$api/repositories/$($fixture.id)/investigations/$investigationId"
+    $claims = @($detail.claims)
+    $evidence = @($detail.evidence)
+
+    Assert-That ($detail.status -eq "SUCCEEDED") "the investigation is SUCCEEDED"
+    Assert-That ($detail.grounded -eq $true) "the answer is grounded"
+    Assert-That ($claims.Count -gt 0) "the answer has claims to check"
+    Assert-That ($evidence.Count -gt 0) "the prompt was built from evidence"
+    Assert-That ([int] $detail.evidenceCount -eq $evidence.Count) `
+        "the recorded evidence count matches the evidence rows"
+    # The summary is a sentence a person reads, so it has to name the count it counted.
+    Assert-That ([string] $detail.retrievalSummary `
+            -match ("^" + [int] $detail.evidenceCount + " item\(s\) of evidence")) `
+        "the retrieval summary states how many items it counted"
+    Assert-That ([int] $detail.verifiedClaims -eq $claims.Count) `
+        "every claim is VERIFIED (verified=$($detail.verifiedClaims) of $($claims.Count))"
+    Assert-That ([int] $detail.unsupportedClaims -eq 0) "no claim is unsupported"
+    Assert-That ([int] $detail.partialClaims -eq 0) "no claim is partly supported"
+    Assert-That (@($claims | Where-Object { $_.verificationStatus -ne "VERIFIED" }).Count -eq 0) `
+        "no claim carries a verdict other than VERIFIED"
+
+    Assert-That ((Get-Prop $detail "promptSha256").Length -eq 64) `
+        "the prompt SHA-256 is recorded (64 hex characters)"
+    Assert-That ([int] $detail.promptChars -gt 0) "the prompt size is recorded"
+    Assert-That ([int] $detail.contextChars -gt 0) "the evidence size within the prompt is recorded"
+    Assert-That ((Get-Prop $detail "completedAt") -ne $null) "the investigation records when it finished"
+    Assert-That ((Get-Prop $detail "modelProvider") -eq "deterministic") `
+        "the provider that answered is recorded"
+
+    # The deterministic extractor is a test double. If it is in use, the answer must say so: a
+    # reader has to be able to tell this apart from a model's answer.
+    $limitations = [string] (Get-Prop $detail "limitations")
+    Assert-That ($limitations -like "*No language model was called*") `
+        "the extractor states that no model was called"
+
+    # Evidence discipline: keys are numbered, every key was cited, and the interesting ones carry a
+    # location that was re-read from disk. No excerpt text may appear in the payload at all.
+    Assert-That (@($evidence | Where-Object { $_.key -notmatch '^E\d+$' }).Count -eq 0) `
+        "every evidence key is numbered En"
+    Assert-That (@($evidence | Where-Object { -not $_.cited }).Count -eq 0) `
+        "every item in the prompt was cited"
+    Assert-That (@($evidence | Where-Object { $_.kind -eq "FINDING" }).Count -gt 0) `
+        "retrieval reached the static findings, not only the symbol table"
+    $located = @($evidence | Where-Object { (Get-Prop $_ "path") -ne $null })
+    Assert-That ($located.Count -gt 0) "at least one item carries a file location"
+    Assert-That (@($located | Where-Object { $_.sourceStatus -eq "CONFIRMED" }).Count -gt 0) `
+        "at least one located item was re-read and confirmed"
+    Assert-That (@($evidence | Where-Object { (Get-Prop $_ "excerptChars") -gt 0 }).Count -gt 0) `
+        "the excerpt length is recorded without the excerpt"
+    $fields = @($evidence[0].PSObject.Properties.Name)
+    Assert-That ($fields -notcontains "excerpt") "no response field carries the excerpt text"
+    Assert-That ($fields -notcontains "excerptSha256") `
+        "the excerpt hash is not exposed through the API"
+
+    # Diagnostics say what the investigation could not do. The extractor leaves every conclusion
+    # to the reader, so it always has one thing to say.
+    Assert-That (@($detail.diagnostics.unanswered).Count -gt 0) `
+        "the investigation records what it could not answer"
+
+    # The list endpoint agrees with the detail endpoint.
+    $investigationPage = Get-Json "$api/repositories/$($fixture.id)/investigations?size=50"
+    $listed = @($investigationPage.items | Where-Object { $_.id -eq $investigationId })
+    Assert-That ($listed.Count -eq 1) "the investigation appears once in the repository's list"
+    Assert-That ($listed[0].grounded -eq $true) "the list reports the same grounding verdict"
+
+    # A repository's identifier cannot be used to read another repository's investigation.
+    $crossRepo = Get-ExpectingFailure "$api/repositories/$repositoryId/investigations/$investigationId"
+    Assert-That ($crossRepo.Status -eq 404) `
+        "an investigation is scoped to its repository (was $($crossRepo.Status))"
+
+    # A question made only of stop words names nothing; it is refused before a job exists.
+    $emptyAsk = Post-ExpectingFailure "$api/repositories/$($fixture.id)/investigations" `
+        (@{ question = "how does the code work" } | ConvertTo-Json -Compress)
+    Assert-That ($emptyAsk.Status -eq 400) `
+        "a question with nothing to search for is refused (was $($emptyAsk.Status))"
+    Assert-That ([string] $emptyAsk.Body -like "*names nothing to search for*") `
+        "the refusal says the question names nothing"
+
+    # Cancellation: a queued investigation can be withdrawn, and a withdrawn one cannot be
+    # cancelled twice. The second answer is 409, not a second acceptance.
+    $cancellable = Post-Json "$api/repositories/$($fixture.id)/investigations" $askBody
+    Assert-That ($cancellable.status -eq "QUEUED") "a second question is queued before it is cancelled"
+    Post-Json "$api/repositories/$($fixture.id)/investigations/$($cancellable.investigationId)/cancel" "{}" |
+        Out-Null
+    $cancelled = Get-Json "$api/repositories/$($fixture.id)/investigations/$($cancellable.investigationId)"
+    Assert-That ($cancelled.status -eq "CANCELLED") `
+        "a cancelled investigation is recorded as CANCELLED, not left queued"
+    Assert-That ((Get-Prop $cancelled "answer") -eq $null) `
+        "a cancelled investigation has no answer"
+    $cancelAgain = Post-ExpectingFailure `
+        "$api/repositories/$($fixture.id)/investigations/$($cancellable.investigationId)/cancel" "{}"
+    Assert-That ($cancelAgain.Status -eq 409) `
+        "cancelling a finished investigation is a conflict (was $($cancelAgain.Status))"
+
+    # The whole surface is behind the bearer token: no token, no evidence about the repository.
+    # A bare HttpClient is used rather than Invoke-WebRequest's error record, which differs between
+    # PowerShell releases.
+    $anonymous = New-Object System.Net.Http.HttpClient
+    $anonymousResponse = $anonymous.GetAsync("$api/repositories/$($fixture.id)/investigations").Result
+    $unauthStatus = [int] $anonymousResponse.StatusCode
+    $anonymousResponse.Dispose()
+    $anonymous.Dispose()
+    Assert-That ($unauthStatus -eq 401) `
+        "the investigation list requires the bearer token (was $unauthStatus)"
 }
 
 # ---------------------------------------------------------------- summary

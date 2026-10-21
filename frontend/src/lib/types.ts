@@ -686,3 +686,116 @@ export interface HealthStatus {
   status: "UP" | "DOWN" | "OUT_OF_SERVICE" | "UNKNOWN";
   components?: Record<string, { status: string; details?: Record<string, unknown> }>;
 }
+
+// ---------------------------------------------------------- investigations
+
+export type InvestigationStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+
+export type ClaimKind = "OBSERVATION" | "INFERENCE" | "RECOMMENDATION";
+
+/** The backend's verdict on one claim. Never the model's own confidence. */
+export type ClaimVerification = "VERIFIED" | "PARTIAL" | "UNSUPPORTED";
+
+/** Whether the excerpt a model was shown still matches the file on disk. */
+export type EvidenceSourceStatus = "CONFIRMED" | "CHANGED" | "MISSING" | "NOT_LOCATED";
+
+export type InvestigationEvidenceKind =
+  | "FINDING"
+  | "SYMBOL"
+  | "FILE"
+  | "MEASUREMENT"
+  | "REPOSITORY";
+
+export interface InvestigationSubmission {
+  investigationId: Uuid;
+  jobId: Uuid;
+  status: InvestigationStatus;
+}
+
+export interface InvestigationSummary {
+  id: Uuid;
+  title: string;
+  question: string;
+  status: InvestigationStatus;
+  grounded: boolean;
+  confidence: string | null;
+  evidenceCount: number | null;
+  modelProvider: string | null;
+  jobId: Uuid | null;
+  createdAt: Instant;
+  completedAt: Instant | null;
+  errorMessage: string | null;
+}
+
+/**
+ * One piece of evidence that was in the prompt.
+ *
+ * There is no excerpt field, and that is deliberate: the text was hashed and sent, and only the
+ * hash is stored. `excerptChars` and `sourceStatus` are what a reader gets instead of a prompt log.
+ */
+export interface InvestigationEvidence {
+  key: string;
+  kind: InvestigationEvidenceKind;
+  label: string;
+  detail: string | null;
+  path: string | null;
+  startLine: number | null;
+  endLine: number | null;
+  symbolName: string | null;
+  symbolKind: string | null;
+  retrievalScore: number;
+  retrievalMethod: string | null;
+  rank: number;
+  cited: boolean;
+  sourceStatus: EvidenceSourceStatus | null;
+  verifiedAt: Instant | null;
+  excerptChars: number | null;
+}
+
+export interface InvestigationClaim {
+  index: number;
+  text: string;
+  kind: ClaimKind;
+  citedKeys: string[];
+  verificationStatus: ClaimVerification;
+  notes: string | null;
+}
+
+export interface InvestigationDiagnostics {
+  unanswered: string[];
+  danglingMarkers: string[];
+  retrievalNotes: string[];
+  parserNotes: string[];
+}
+
+export interface InvestigationDetail {
+  id: Uuid;
+  repositoryId: Uuid;
+  revisionId: Uuid | null;
+  jobId: Uuid | null;
+  title: string;
+  question: string;
+  scope: string | null;
+  status: InvestigationStatus;
+  answer: string | null;
+  confidence: string | null;
+  grounded: boolean;
+  retrievalSummary: string | null;
+  limitations: string | null;
+  modelProvider: string | null;
+  modelName: string | null;
+  promptChars: number | null;
+  contextChars: number | null;
+  evidenceCount: number | null;
+  latencyMs: number | null;
+  promptSha256: string | null;
+  createdAt: Instant;
+  completedAt: Instant | null;
+  errorMessage: string | null;
+  evidence: InvestigationEvidence[];
+  claims: InvestigationClaim[];
+  diagnostics: InvestigationDiagnostics;
+  verifiedClaims: number;
+  partialClaims: number;
+  unsupportedClaims: number;
+}

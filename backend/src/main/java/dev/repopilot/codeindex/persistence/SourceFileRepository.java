@@ -39,4 +39,22 @@ public interface SourceFileRepository extends JpaRepository<SourceFile, UUID> {
     int deleteByRevisionId(@Param("revisionId") UUID revisionId);
 
     long countByRevisionIdAndParseStatus(UUID revisionId, dev.repopilot.codeindex.parse.ParseStatus parseStatus);
+
+    /**
+     * Path search used by investigation retrieval.
+     *
+     * <p>Matching a question against a path is the cheapest way to find the file somebody
+     * meant when they wrote "the OrderService class" without naming a symbol that exists.
+     * Ordered shortest-first so a path that <em>is</em> the match beats one that merely
+     * contains it.
+     */
+    @Query("""
+            SELECT f FROM SourceFile f
+            WHERE f.revisionId = :revisionId
+              AND LOWER(f.relativePath) LIKE LOWER(CONCAT('%', :term, '%'))
+            ORDER BY LENGTH(f.relativePath) ASC, f.relativePath ASC
+            """)
+    List<SourceFile> searchByPath(@Param("revisionId") UUID revisionId,
+                                  @Param("term") String term,
+                                  Pageable pageable);
 }
