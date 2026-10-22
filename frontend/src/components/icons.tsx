@@ -32,6 +32,7 @@ export type IconName =
   | "close"
   | "chevron-right"
   | "chevron-down"
+  | "chevron-up"
   | "external"
   | "plug"
   | "database"
@@ -39,7 +40,13 @@ export type IconName =
   | "sun"
   | "moon"
   | "panel-left"
-  | "info";
+  | "info"
+  | "bell"
+  | "zap"
+  | "layers"
+  | "terminal"
+  | "target"
+  | "eye";
 
 const PATHS: Record<IconName, string> = {
   overview: "M4 13h7V4H4v9Zm0 7h7v-4H4v4Zm9 0h7V11h-7v9Zm0-16v4h7V4h-7Z",
@@ -69,6 +76,7 @@ const PATHS: Record<IconName, string> = {
   close: "M6 6l12 12M18 6L6 18",
   "chevron-right": "M9 6l6 6-6 6",
   "chevron-down": "M6 9l6 6 6-6",
+  "chevron-up": "M6 15l6-6 6 6",
   external: "M14 5h5v5M19 5l-8 8M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4",
   plug: "M9 3v6M15 3v6M7 9h10v3a5 5 0 0 1-10 0V9ZM12 17v4",
   database: "M12 8c4.4 0 8-1.1 8-2.5S16.4 3 12 3 4 4.1 4 5.5 7.6 8 12 8ZM4 5.5v13C4 19.9 7.6 21 12 21s8-1.1 8-2.5v-13M4 12c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5",
@@ -77,6 +85,12 @@ const PATHS: Record<IconName, string> = {
   moon: "M20 14.5A8.5 8.5 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z",
   "panel-left": "M4 5h16v14H4zM9.5 5v14",
   info: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 11v5M12 7.5v.5",
+  bell: "M18 9a6 6 0 1 0-12 0c0 5-2 6-2 6h16s-2-1-2-6M10 20h4",
+  zap: "M13 2L4 14h6l-1 8 9-12h-6l1-8Z",
+  layers: "M12 3l9 5-9 5-9-5 9-5ZM3 13l9 5 9-5M3 17l9 5 9-5",
+  terminal: "M4 5h16v14H4zM7 9l3 3-3 3M13 15h4",
+  target: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM12 3v3M12 18v3M3 12h3M18 12h3",
+  eye: "M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12ZM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
 };
 
 interface IconProps extends Omit<SVGProps<SVGSVGElement>, "name"> {

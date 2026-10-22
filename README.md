@@ -10,6 +10,23 @@ against indexed evidence by the backend before you see it.
 
 ![Overview](docs/screenshots/overview.png)
 
+## The Code Universe
+
+The centrepiece is a real interactive projection of the index, not a decorative diagram.
+Nodes are indexed classes, interfaces, enums, records and methods; edges are the references
+RepoPilot resolved (or explicitly marked inferred/external). Zoom, pan, drag, search,
+multi-select, focus, kind/package/edge filters, a severity lens, a minimap, a keyboard-
+navigable inspector and an AI evidence trail all operate on the same slice. Canvas 2D and
+`d3-force` keep it interactive when a DOM-per-symbol graph would not.
+
+The endpoint is honest about its bounds: `GET /api/v1/repositories/{id}/universe` returns a
+revision, at most 2,400 edges for the current UI, the totals before the cap, and a
+`truncated` flag. External targets are aggregated by name. The screen states the slice
+rather than presenting it as the whole repository. See
+[ADR 0014](docs/adr/0014-bounded-code-universe.md).
+
+![Code Universe](docs/screenshots/code-universe.png)
+
 ## Screenshots
 
 | Screen | What to look at |
@@ -19,8 +36,10 @@ against indexed evidence by the backend before you see it.
 | [Finding detail](docs/screenshots/finding-detail.png) | One finding in full — why it matters, what to do, and *what this rule cannot see* |
 | [Nothing analysed yet](docs/screenshots/findings-not-analysed.png) | The zero state. "Not analysed" is a different screen from "found nothing", and the wording says which one you are looking at |
 | [Code Explorer — references](docs/screenshots/code-explorer-references.png) | Incoming and outgoing references for a symbol, each with its resolution status |
-| [Dependency Graph](docs/screenshots/dependency-graph.png) | The type/reference graph, coloured by resolution |
-| [Dependency Graph — bounded](docs/screenshots/dependency-graph-bounded.png) | The graph view on a 3 000-file repository: `1,000` of `100,801` matching edges, with the banner stating that the counts describe the slice |
+| [Code Explorer — deep link](docs/screenshots/code-explorer-deep-link.png) | A `?path=&line=91` link resolved a file that was outside the explorer's first 500-row page, pinned it as a *Linked file*, scrolled the stacked reader into view and centred line 91 |
+| [Code Universe](docs/screenshots/code-universe.png) | A real 309-node slice of the benchmark corpus: `2,400 of 100,801` relationships, `290 of 16,205` indexed symbols plus aggregated external targets, and the banner that calls it a slice |
+| [Code Universe — evidence trail](docs/screenshots/code-universe-evidence-trail.png) | An investigation's evidence joined to the graph: `GROUNDED`, `5 evidence nodes · 6 path edges`, with the revision guard ready to withhold a trail recorded on another revision |
+| [Findings](docs/screenshots/findings.png) | The standalone findings screen: severity rail, category and status filters, rule/message search, and paths that open the exact line |
 | [Analysis History](docs/screenshots/analysis-history.png) | Every job with its outcome summary, attempts and duration |
 | [Performance Lab — upload](docs/screenshots/performance-lab-upload.png) | A recording is stored by content hash on this machine; the panels underneath count what a run produced |
 | [Performance Lab — run](docs/screenshots/performance-lab-run.png) | One run in full: kind breakdown, the summary, and *"No threshold was applied and no severity was assigned"* followed by the recording's provenance — JVM, build, OS, CPU, memory |
@@ -51,7 +70,7 @@ against indexed evidence by the backend before you see it.
 | [Settings](docs/screenshots/settings.png) | Connection, sandbox roots, AI provider status, privacy controls |
 | [Settings — artefact retention](docs/screenshots/settings-retention.png) | The window (`30` days), what is stored (`1 (281 KB)`), what a pass would remove, and *"Nothing is past this window"* instead of a bare empty table |
 | [Command palette](docs/screenshots/command-palette.png) | `Ctrl K` |
-| [Overview](docs/screenshots/overview.png) | Repository inventory, job activity and system status |
+| [Overview](docs/screenshots/overview.png) | Repository health as a visual centrepiece: real file/symbol/relationship/finding counters, a live status orb, jobs in flight, a Code Universe preview and honest runtime summaries |
 
 ---
 
@@ -97,7 +116,8 @@ rather than pretending.
 | Coverage reporting | **Working** | Inspected vs. read vs. deliberately-not-read, with per-reason breakdowns |
 | Reference resolution | **Working** | `RESOLVED` / `INFERRED` / `EXTERNAL` / `UNRESOLVED`; exact qualified-match only |
 | Code Explorer | **Working** | Files, source with line numbers, symbols, references, API mappings, findings |
-| Dependency Graph | **Working** | Type/reference graph with resolution status per edge |
+| Code Intelligence Universe | **Working** | Real Indexed nodes and resolved edges on Canvas 2D + `d3-force`; zoom, pan, drag, search, multi-select, focus, hard filters, severity lens, inspector, minimap and evidence trail. The response states its bounded slice |
+| Findings (standalone) | **Working** | Severity rail, category/status filters, search, and cited paths that open the exact code line |
 | Static analysis — built-in rules | **Working** | Eight rules (`RP001`–`RP008`) parsed once per file; every finding carries its rule, its citation and its stated limitation |
 | Static analysis — PMD | **Working** | PMD 7.28.0's bundled quickstart ruleset, in-process, with file content fed to PMD rather than collected by it |
 | Static analysis — SpotBugs | **Not yet** | Needs bytecode. `compiledClassesPresent` is recorded per revision, so it will report *not applicable* with the precondition attached rather than a pass |
@@ -197,8 +217,8 @@ service boundaries ([ADR 0001](docs/adr/0001-modular-monolith.md)).
 
 ```
                     ┌──────────────────────────── frontend (React + TS, strict) ──────┐
-                    │  Overview · Code Explorer · Dependency Graph · History · Settings│
-                    │  Performance Lab · Concurrency Inspector · Memory · AI (planned) │
+                    │  Overview · Code Universe · Code Explorer · AI Investigations│
+                    │  Memory · Performance · Concurrency · Findings · History        │
                     └───────────────────────────────┬──────────────────────────────────┘
                                           bearer token │ /api/v1
                     ┌───────────────────────────────▼──────────────────────────────────┐
@@ -632,8 +652,8 @@ scripts/                     generate-corpus · measure-index · measure-analysi
 # backend: tests (JUnit 5, Mockito, Testcontainers where a real database matters)
 cd backend && ./mvnw test
 
-# frontend: type check and production build
-cd frontend && npm run typecheck && npm run build
+# frontend: type check, graph helper tests and production build
+cd frontend && npm run typecheck && npm test && npm run build
 
 # end-to-end smoke test against a running backend
 powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/smoke-test.ps1
@@ -659,6 +679,7 @@ Architecture decisions are recorded as ADRs in [docs/adr](docs/adr):
 | [0011](docs/adr/0011-benchmark-evidence.md) | Benchmark results: quote the harness, apply no threshold, compare nothing |
 | [0012](docs/adr/0012-artefact-retention.md) | Artefact retention: the file goes, the evidence stays |
 | [0013](docs/adr/0013-ai-investigation.md) | AI investigation: an answer is a set of checked citations, not a paragraph |
+| [0014](docs/adr/0014-bounded-code-universe.md) | Code Universe: a bounded, revision-stated graph projection rendered on Canvas 2D |
 
 Further reading:
 
@@ -745,11 +766,14 @@ Stated plainly, because a tool that hides these cannot be trusted with the other
   exactly. This is a deliberate trade for never inventing a target.
 - **No symbol solver is used.** Type resolution is textual and structural. Generic type
   arguments, inheritance chains and overloads are not disambiguated.
-- **The dependency graph is a bounded slice, and says so.** It returns at most the first
-  1 000 structural edges (cap 20 000) of the default edge types, with `totalEdges` and
-  `truncated` stating what was left out. Annotation, thrown-type, injection and messaging
-  edges are indexed but not drawn by default. The unbounded version took 50 seconds and
-  22 MiB on the benchmark corpus.
+- **The Code Universe is a bounded slice, and says so.** The projection endpoint returns
+  at most 1 400 edges by default (cap 6 000; the current UI asks for 2 400), together with
+  `totalSymbols`, `totalEdges`, `truncated` and a separate external-target count. Nodes are
+  only the indexed symbols touched by those edges; external references are aggregated by
+  name (the 220 most-referenced). Annotation, thrown-type, injection and messaging edges
+  are indexed but not drawn by default. The unbounded version took 50 seconds and 22 MiB on
+  the benchmark corpus. The older paged `/graph` endpoint remains available with its own
+  20 000-edge cap; it is not the same contract.
 - **Docker Compose is unverified here** (no daemon in the build environment).
 - **The corpus is synthetic.** It measures the pipeline, not the quality of analysis on
   real-world code.

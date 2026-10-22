@@ -35,6 +35,7 @@ import type {
   SourceContentView,
   SourceFileView,
   SymbolView,
+  UniverseView,
   Uuid,
   WorkspaceSummary,
 } from "@/lib/types";
@@ -129,6 +130,24 @@ export function useFiles(repositoryId: Uuid | null, revisionId: Uuid | null) {
   });
 }
 
+export function useFileByPath(
+  repositoryId: Uuid | null,
+  path: string | null,
+  revisionId: Uuid | null,
+) {
+  return useQuery<SourceFileView>({
+    queryKey: ["file-by-path", repositoryId, path, revisionId],
+    queryFn: ({ signal }) =>
+      api.fileByPath(repositoryId as Uuid, path as string, revisionId ?? undefined, signal),
+    enabled: repositoryId !== null && path !== null && path.length > 0,
+    staleTime: 60_000,
+    ...guard(),
+    // A missing path is a definitive 404. Retrying it only delays the warning the
+    // explorer must show for a broken shared link.
+    retry: false,
+  });
+}
+
 export function useFileContent(
   repositoryId: Uuid | null,
   path: string | null,
@@ -191,6 +210,24 @@ export function useGraph(repositoryId: Uuid | null, revisionId: Uuid | null) {
     queryKey: ["graph", repositoryId, revisionId],
     queryFn: ({ signal }) => api.graph(repositoryId as Uuid, undefined, revisionId ?? undefined, signal),
     enabled: repositoryId !== null,
+    ...guard(),
+  });
+}
+
+/**
+ * The code universe: nodes plus edges, assembled by the backend.
+ *
+ * Keyed by revision because the graph describes one indexed revision, not "the repository".
+ * The query is not polled: an index job that changes the graph also changes the revision,
+ * and that is what invalidates this key.
+ */
+export function useUniverse(repositoryId: Uuid | null, revisionId: Uuid | null) {
+  return useQuery<UniverseView>({
+    queryKey: ["universe", repositoryId, revisionId],
+    queryFn: ({ signal }) =>
+      api.universe(repositoryId as Uuid, { revisionId: revisionId ?? undefined, limit: 2400 }, signal),
+    enabled: repositoryId !== null,
+    staleTime: 60_000,
     ...guard(),
   });
 }

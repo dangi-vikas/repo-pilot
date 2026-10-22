@@ -30,15 +30,17 @@ export function Card({
   children,
   flush = false,
   className,
+  id,
 }: {
   title?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
   flush?: boolean;
   className?: string;
+  id?: string;
 }) {
   return (
-    <section className={["card", className].filter(Boolean).join(" ")}>
+    <section id={id} className={["card", className].filter(Boolean).join(" ")}>
       {title !== undefined || actions !== undefined ? (
         <header className="card-header">
           {typeof title === "string" ? <h3 className="card-title">{title}</h3> : title}

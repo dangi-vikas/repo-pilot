@@ -52,6 +52,15 @@ export function CommandPalette({
     }));
     const actions: Command[] = [
       {
+        id: "go-settings",
+        label: "Settings",
+        group: "Go to",
+        hint: "operator panel",
+        icon: "settings",
+        keywords: "configuration provider token security preferences",
+        run: () => onNavigate("/settings"),
+      },
+      {
         id: "action-create-workspace",
         label: "Create workspace",
         group: "Actions",

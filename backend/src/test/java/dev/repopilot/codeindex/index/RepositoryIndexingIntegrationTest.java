@@ -13,6 +13,10 @@ import dev.repopilot.codeindex.persistence.SourceFileRepository;
 import dev.repopilot.codeindex.query.CodeIndexQueryService;
 import dev.repopilot.codeindex.query.CoverageView;
 import dev.repopilot.codeindex.query.GraphView;
+import dev.repopilot.codeindex.query.SourceFileView;
+import dev.repopilot.codeindex.query.UniverseEdge;
+import dev.repopilot.codeindex.query.UniverseNode;
+import dev.repopilot.codeindex.query.UniverseView;
 import dev.repopilot.repository.RepositoryService;
 import dev.repopilot.repository.RepositoryStatus;
 import dev.repopilot.repository.RepositorySummary;
@@ -158,6 +162,16 @@ class RepositoryIndexingIntegrationTest {
                 .orElseThrow();
         assertThat(broken.getParseStatus()).isEqualTo(ParseStatus.PARSED_WITH_PROBLEMS);
         assertThat(broken.getParseError()).isNotBlank();
+
+        // A deep link resolves by path, not by position in the first file page. Unknown
+        // paths stay absent so the API can answer 404 instead of inventing a file.
+        SourceFileView orderByPath = codeIndex
+                .fileByPath(outcome.revisionId(), "com/example/orders/Order.java")
+                .orElseThrow();
+        assertThat(orderByPath.relativePath()).isEqualTo("com/example/orders/Order.java");
+        assertThat(orderByPath.parseStatus()).isEqualTo(ParseStatus.PARSED);
+        assertThat(codeIndex.fileByPath(outcome.revisionId(), "com/example/orders/Missing.java")).isEmpty();
+        assertThat(codeIndex.fileByPath(outcome.revisionId(), "  ")).isEmpty();
 
         // The service references Order and OrderRepository, both declared in this revision,
         // so at least one edge must be internal rather than external.
@@ -412,8 +426,82 @@ class RepositoryIndexingIntegrationTest {
         assertThat(capped.items().size()).isLessThanOrEqualTo(capped.limit());
     }
 
-    private static void writeJava(Path root, String relativePath, String content) throws IOException {
-        Path file = root.resolve(relativePath);
+    @Test
+    @DisplayName("returns a renderable universe whose every edge has a node at both ends")
+    void buildsARenderableUniverse() throws IOException {
+        Path repository = workspaceRoot.resolve("universe");
+        writeJava(repository, "com/example/u/Thing.java", """
+                package com.example.u;
+
+                public class Thing {
+                }
+                """);
+        writeJava(repository, "com/example/u/Uses.java", """
+                package com.example.u;
+
+                import java.util.List;
+
+                public class Uses {
+                    Thing thing;
+                    List<String> names;
+
+                    Thing make() {
+                        return new Thing();
+                    }
+                }
+                """);
+
+        workspaces.ensureDefaultWorkspace();
+        WorkspaceSummary workspace = workspaces.listSummaries().get(0);
+        RepositorySummary registered = repositories.register(workspace.id(), "universe",
+                repository.toAbsolutePath().toString());
+        IndexOutcome outcome = indexer.index(registered.id(), null);
+
+        UniverseView universe = codeIndex.universe(outcome.revisionId(), null, null);
+        assertThat(universe.nodes()).isNotEmpty();
+        assertThat(universe.edges()).isNotEmpty();
+
+        // A duplicate id would make two nodes indistinguishable to the renderer's maps and to
+        // the inspector's lookups, so the endpoint guarantees uniqueness rather than leaving it
+        // to the client to deduplicate.
+        assertThat(universe.nodes()).extracting(UniverseNode::id).doesNotHaveDuplicates();
+
+        var nodeIds = new java.util.HashSet<String>();
+        universe.nodes().forEach(node -> nodeIds.add(node.id()));
+        // Every edge must terminate at a node that is in the document. An edge to a node the
+        // payload omitted draws as a line to nowhere, which is worse than omitting the edge.
+        for (UniverseEdge edge : universe.edges()) {
+            assertThat(nodeIds).contains(edge.source());
+            assertThat(nodeIds).contains(edge.target());
+        }
+
+        // Repository nodes carry the metadata the inspector needs; external nodes must not
+        // pretend to have a file, because there is nothing to open.
+        for (UniverseNode node : universe.nodes()) {
+            if (node.external()) {
+                assertThat(node.kind()).isEqualTo("EXTERNAL");
+                assertThat(node.path()).isNull();
+            } else {
+                assertThat(node.path()).isNotBlank();
+                assertThat(node.kind()).isNotBlank();
+            }
+        }
+
+        assertThat(universe.nodes()).anyMatch(node ->
+                !node.external() && "Thing".equals(node.name()));
+        assertThat(universe.nodes()).anyMatch(node ->
+                node.external() && node.qualifiedName() != null
+                        && node.qualifiedName().endsWith("List"));
+
+        // The bound is a real bound, and truncation is stated rather than implied by a short list.
+        UniverseView slice = codeIndex.universe(outcome.revisionId(), null, 1);
+        assertThat(slice.edges()).hasSize(1);
+        assertThat(slice.edgeLimit()).isEqualTo(1);
+        assertThat(slice.truncated()).isTrue();
+        assertThat(slice.totalEdges()).isEqualTo(universe.totalEdges());
+    }
+
+    private static void writeJava(Path root, String relativePath, String content) throws IOException {        Path file = root.resolve(relativePath);
         Files.createDirectories(file.getParent());
         Files.writeString(file, content, StandardCharsets.UTF_8);
     }

@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { ActivityConsole } from "@/components/ActivityConsole";
 import { CommandPalette } from "@/components/CommandPalette";
 import { ConnectionGate } from "@/components/ConnectionGate";
 import { DESTINATIONS } from "@/components/destinations";
@@ -7,10 +8,11 @@ import { NavRail } from "@/components/NavRail";
 import { TopBar } from "@/components/TopBar";
 import { AnalysisHistoryPage } from "@/pages/AnalysisHistoryPage";
 import { CapabilityPage } from "@/pages/CapabilityPage";
+import { CodeUniversePage } from "@/pages/CodeUniversePage";
+import { FindingsPage } from "@/pages/FindingsPage";
 import { InvestigationPage } from "@/pages/InvestigationPage";
 import { CodeExplorerPage } from "@/pages/CodeExplorerPage";
 import { ConcurrencyInspectorPage } from "@/pages/ConcurrencyInspectorPage";
-import { DependencyGraphPage } from "@/pages/DependencyGraphPage";
 import { MemoryPage } from "@/pages/MemoryPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { OverviewPage } from "@/pages/OverviewPage";
@@ -41,8 +43,8 @@ function elementFor(destinationId: string) {
       return <OverviewPage />;
     case "code":
       return <CodeExplorerPage />;
-    case "graph":
-      return <DependencyGraphPage />;
+    case "universe":
+      return <CodeUniversePage />;
     case "performance":
       return <PerformanceLabPage />;
     case "concurrency":
@@ -51,10 +53,10 @@ function elementFor(destinationId: string) {
       return <MemoryPage />;
     case "history":
       return <AnalysisHistoryPage />;
+    case "findings":
+      return <FindingsPage />;
     case "investigation":
       return <InvestigationPage />;
-    case "settings":
-      return <SettingsPage />;
     default:
       return <CapabilityPage destinationId={destinationId} />;
   }
@@ -67,6 +69,14 @@ export function AppShell() {
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const location = useLocation();
+  const contentRef = useRef<HTMLElement | null>(null);
+
+  // The shell keeps its own scroll container. Without this, moving from a long page to a
+  // short one lands halfway down the short one, with the title above the viewport.
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [location.pathname]);
 
   useEffect(() => {
     try {
@@ -101,17 +111,20 @@ export function AppShell() {
       />
       <div className="main">
         <TopBar onOpenPalette={() => setPaletteOpen(true)} />
-        <main className="content">
+        <main className="content" ref={contentRef}>
           <div className="content-inner">
             <Routes>
               <Route path="/" element={<Navigate to="/overview" replace />} />
               {DESTINATIONS.map((destination) => (
                 <Route key={destination.id} path={destination.path} element={elementFor(destination.id)} />
               ))}
+              <Route path="/graph" element={<Navigate to="/universe" replace />} />
+              <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={<NotFoundPage />} />
             </Routes>
           </div>
         </main>
+        <ActivityConsole />
       </div>
       {paletteOpen ? (
         <CommandPalette

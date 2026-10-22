@@ -4,9 +4,12 @@ import dev.repopilot.codeindex.model.EdgeResolution;
 import dev.repopilot.codeindex.model.EdgeType;
 import dev.repopilot.codeindex.model.MappingType;
 import dev.repopilot.codeindex.parse.ParseStatus;
+import dev.repopilot.codeindex.persistence.CodeSymbol;
 import dev.repopilot.codeindex.persistence.CodeSymbolRepository;
+import dev.repopilot.codeindex.persistence.DependencyEdge;
 import dev.repopilot.codeindex.persistence.DependencyEdgeRepository;
 import dev.repopilot.codeindex.persistence.JavaMappingRepository;
+import dev.repopilot.codeindex.persistence.SourceFile;
 import dev.repopilot.codeindex.persistence.SourceFileRepository;
 import dev.repopilot.repository.RepositoryRevision;
 import dev.repopilot.repository.RepositoryRevisionRepository;
@@ -17,7 +20,15 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -42,6 +53,16 @@ public class CodeIndexQueryService {
     private static final int GRAPH_DEFAULT_LIMIT = 1_000;
     private static final int GRAPH_MAX_LIMIT = 20_000;
 
+    /**
+     * Universe limits are lower than the edge-list limits on purpose. The renderer draws every
+     * returned edge, so the cost of the last edge is not a row in a table: it is a frame budget.
+     */
+    private static final int UNIVERSE_DEFAULT_LIMIT = 1_400;
+    private static final int UNIVERSE_MAX_LIMIT = 6_000;
+
+    /** Enough external targets to show the shape of the dependency surface without a second hairball. */
+    private static final int UNIVERSE_EXTERNAL_MAX = 220;
+
     private final SourceFileRepository sourceFiles;
     private final CodeSymbolRepository symbols;
     private final DependencyEdgeRepository edges;
@@ -63,6 +84,24 @@ public class CodeIndexQueryService {
     @Transactional(readOnly = true)
     public Page<SourceFileView> listFiles(UUID revisionId, Pageable pageable) {
         return sourceFiles.findByRevisionIdOrderByRelativePathAsc(revisionId, pageable)
+                .map(file -> new SourceFileView(file.getId(), file.getRelativePath(), file.getLanguage(),
+                        file.getSizeBytes(), file.getLineCount(), file.getParseStatus(),
+                        file.getParseError(), file.getPackageName()));
+    }
+
+    /**
+     * One indexed file by its repository-relative path.
+     *
+     * <p>The explorer's first file page is bounded, so a deep link to a file that sorts
+     * after that page cannot be resolved from the page alone. This lookup keeps the
+     * deep link independent of page size without shipping every file to the browser.
+     */
+    @Transactional(readOnly = true)
+    public Optional<SourceFileView> fileByPath(UUID revisionId, String relativePath) {
+        if (relativePath == null || relativePath.isBlank()) {
+            return Optional.empty();
+        }
+        return sourceFiles.findByRevisionIdAndRelativePath(revisionId, relativePath.strip())
                 .map(file -> new SourceFileView(file.getId(), file.getRelativePath(), file.getLanguage(),
                         file.getSizeBytes(), file.getLineCount(), file.getParseStatus(),
                         file.getParseError(), file.getPackageName()));
@@ -163,5 +202,185 @@ public class CodeIndexQueryService {
                 .map(EdgeView::from)
                 .getContent();
         return new GraphView(items, total, effectiveLimit, total > items.size());
+    }
+
+    /**
+     * A bounded, renderable slice of the dependency universe.
+     *
+     * <p>The assembly happens here rather than in the browser because the node metadata the
+     * inspector needs — qualified name, file, package, line range, complexity — otherwise costs
+     * one request per node. One read transaction loads the edge slice, then only the symbols and
+     * files that slice actually touches.
+     *
+     * <p>Targets that do not resolve to an indexed declaration are aggregated by name into
+     * external nodes, most-referenced first, capped at {@value #UNIVERSE_EXTERNAL_MAX}. An edge
+     * whose external target did not make the cap is dropped, because an edge to a node the
+     * payload does not contain would render as a line to nowhere. This is why the returned edge
+     * count can be lower than the fetched row count and the caller must not infer completeness
+     * from it.
+     */
+    @Transactional(readOnly = true)
+    public UniverseView universe(UUID revisionId, List<EdgeType> types, Integer limit) {
+        List<EdgeType> effective = (types == null || types.isEmpty()) ? DEFAULT_GRAPH_TYPES : types;
+        int effectiveLimit = limit == null || limit <= 0
+                ? UNIVERSE_DEFAULT_LIMIT
+                : Math.min(limit, UNIVERSE_MAX_LIMIT);
+
+        long totalEdges = edges.countByRevisionIdAndTypes(revisionId, effective);
+        List<DependencyEdge> rows = edges
+                .findPageByRevisionIdAndTypes(revisionId, effective, PageRequest.of(0, effectiveLimit))
+                .getContent();
+
+        Set<UUID> symbolIds = new HashSet<>();
+        for (DependencyEdge edge : rows) {
+            if (edge.getSourceSymbolId() != null) {
+                symbolIds.add(edge.getSourceSymbolId());
+            }
+            if (edge.getTargetSymbolId() != null) {
+                symbolIds.add(edge.getTargetSymbolId());
+            }
+        }
+        Map<UUID, CodeSymbol> symbolsById = new HashMap<>();
+        for (CodeSymbol symbol : symbols.findAllById(symbolIds)) {
+            symbolsById.put(symbol.getId(), symbol);
+        }
+
+        Set<UUID> fileIds = new HashSet<>();
+        for (CodeSymbol symbol : symbolsById.values()) {
+            if (symbol.getSourceFileId() != null) {
+                fileIds.add(symbol.getSourceFileId());
+            }
+        }
+        Map<UUID, SourceFile> filesById = new HashMap<>();
+        for (SourceFile file : sourceFiles.findAllById(fileIds)) {
+            filesById.put(file.getId(), file);
+        }
+
+        // Count how often each unresolved target is referenced before deciding which external
+        // nodes are worth drawing. A target referenced once is usually noise; the shared types
+        // are what makes the boundary visible.
+        Map<String, Integer> externalCounts = new LinkedHashMap<>();
+        for (DependencyEdge edge : rows) {
+            if (isResolvedInside(edge, symbolsById)) {
+                continue;
+            }
+            String name = externalName(edge.getTargetName());
+            if (name != null) {
+                externalCounts.merge(name, 1, Integer::sum);
+            }
+        }
+        Set<String> includedExternal = new HashSet<>();
+        externalCounts.entrySet().stream()
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
+                        .thenComparing(Map.Entry.comparingByKey()))
+                .limit(UNIVERSE_EXTERNAL_MAX)
+                .forEach(entry -> includedExternal.add(entry.getKey()));
+
+        List<UniverseNode> nodes = new ArrayList<>(symbolsById.size() + includedExternal.size());
+        for (CodeSymbol symbol : symbolsById.values()) {
+            SourceFile file = filesById.get(symbol.getSourceFileId());
+            nodes.add(new UniverseNode(
+                    symbol.getId().toString(),
+                    symbol.getKind().name(),
+                    symbol.getName(),
+                    symbol.getQualifiedName(),
+                    file == null ? null : file.getRelativePath(),
+                    file == null ? null : file.getPackageName(),
+                    symbol.getStartLine(),
+                    symbol.getEndLine(),
+                    symbol.getComplexity(),
+                    symbol.getParentSymbolId() == null ? null : symbol.getParentSymbolId().toString(),
+                    false));
+        }
+        for (String external : includedExternal) {
+            nodes.add(new UniverseNode(
+                    externalId(external),
+                    "EXTERNAL",
+                    external,
+                    external,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    true));
+        }
+        nodes.sort(Comparator
+                .comparing(UniverseNode::external)
+                .thenComparing(node -> node.packageName() == null ? "" : node.packageName())
+                .thenComparing(node -> node.qualifiedName() == null ? "" : node.qualifiedName())
+                .thenComparing(UniverseNode::id));
+
+        List<UniverseEdge> edges = new ArrayList<>(rows.size());
+        for (DependencyEdge edge : rows) {
+            if (edge.getSourceSymbolId() == null || !symbolsById.containsKey(edge.getSourceSymbolId())) {
+                continue;
+            }
+            String target;
+            if (isResolvedInside(edge, symbolsById)) {
+                target = edge.getTargetSymbolId().toString();
+            } else {
+                String external = externalName(edge.getTargetName());
+                if (external == null || !includedExternal.contains(external)) {
+                    continue;
+                }
+                target = externalId(external);
+            }
+            edges.add(new UniverseEdge(
+                    edge.getId().toString(),
+                    edge.getSourceSymbolId().toString(),
+                    target,
+                    edge.getEdgeType().name(),
+                    edge.getResolution().name(),
+                    edge.getSourceLine()));
+        }
+
+        return new UniverseView(
+                revisionId,
+                nodes,
+                edges,
+                symbols.countByRevisionId(revisionId),
+                totalEdges,
+                effectiveLimit,
+                totalEdges > rows.size());
+    }
+
+    private static boolean isResolvedInside(DependencyEdge edge, Map<UUID, CodeSymbol> symbolsById) {
+        return edge.getTargetSymbolId() != null && symbolsById.containsKey(edge.getTargetSymbolId());
+    }
+
+    /**
+     * The display name of an unresolved target.
+     *
+     * <p>Parser output occasionally wraps a target in generic arguments or a method call. Those
+     * characters are not part of a name, and two spellings of the same type should aggregate into
+     * one node, so only the leading identifier chain is kept.
+     */
+    private static String externalName(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String value = raw.strip();
+        if (value.isEmpty()) {
+            return null;
+        }
+        int cut = value.length();
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '<' || c == '(' || c == '[' || Character.isWhitespace(c)) {
+                cut = i;
+                break;
+            }
+        }
+        String name = value.substring(0, cut).strip();
+        if (name.isEmpty()) {
+            return null;
+        }
+        return name.length() > 180 ? name.substring(0, 180) : name;
+    }
+
+    private static String externalId(String name) {
+        return "external:" + name;
     }
 }

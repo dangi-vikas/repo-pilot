@@ -3,6 +3,7 @@ import { BrowserRouter } from "react-router-dom";
 import { AppShell } from "@/components/AppShell";
 import { queryClient } from "@/lib/queryClient";
 import { ActionsProvider } from "@/state/actions";
+import { MotionProvider } from "@/state/motion";
 import { SelectionProvider } from "@/state/selection";
 import { SessionProvider } from "@/state/session";
 import { ThemeProvider } from "@/state/theme";
@@ -28,9 +29,11 @@ export function App() {
         <SessionProvider>
           <SelectionProvider>
             <ThemeProvider>
-              <ActionsProvider>
-                <AppShell />
-              </ActionsProvider>
+              <MotionProvider>
+                <ActionsProvider>
+                  <AppShell />
+                </ActionsProvider>
+              </MotionProvider>
             </ThemeProvider>
           </SelectionProvider>
         </SessionProvider>

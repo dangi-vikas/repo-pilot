@@ -1,3 +1,5 @@
+import { useEffect, useRef } from "react";
+
 /**
  * Renders a source file with a line-number gutter.
  *
@@ -15,16 +17,36 @@ export function CodeView({
   highlightStart?: number | null;
   highlightEnd?: number | null;
 }) {
+  const codeRef = useRef<HTMLDivElement | null>(null);
   const lines = content.length === 0 ? [] : content.split(/\r\n|\r|\n/);
   const from = highlightStart ?? null;
   const to = highlightEnd ?? from;
+
+  // The source pane scrolls independently of the page. A deep link or finding can point
+  // at a line far below that pane's first screen, so bring the requested line into view
+  // instead of only colouring a row nobody can see.
+  useEffect(() => {
+    const code = codeRef.current;
+    const line = code?.querySelector<HTMLElement>(".code-line.highlight");
+    if (code === null || code === undefined || line === null || line === undefined) {
+      return;
+    }
+    const codeRect = code.getBoundingClientRect();
+    const lineRect = line.getBoundingClientRect();
+    if (lineRect.top < codeRect.top || lineRect.bottom > codeRect.bottom) {
+      code.scrollTop = Math.max(
+        0,
+        code.scrollTop + lineRect.top - codeRect.top - (code.clientHeight - lineRect.height) / 2,
+      );
+    }
+  }, [content, from, to]);
 
   if (lines.length === 0) {
     return <div className="code code-empty">This file is empty.</div>;
   }
 
   return (
-    <div className="code">
+    <div className="code" ref={codeRef}>
       {lines.map((line, index) => {
         const number = index + 1;
         const highlighted = from !== null && number >= from && number <= (to ?? from);

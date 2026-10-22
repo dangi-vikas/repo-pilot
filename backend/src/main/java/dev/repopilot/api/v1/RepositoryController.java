@@ -13,6 +13,7 @@ import dev.repopilot.codeindex.query.SourceContentView;
 import dev.repopilot.codeindex.query.SourceFileReader;
 import dev.repopilot.codeindex.query.SourceFileView;
 import dev.repopilot.codeindex.query.SymbolView;
+import dev.repopilot.codeindex.query.UniverseView;
 import dev.repopilot.jobs.JobService;
 import dev.repopilot.jobs.JobType;
 import dev.repopilot.repository.RepositoryRevision;
@@ -37,6 +38,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
 
 import java.util.Arrays;
@@ -134,6 +136,18 @@ public class RepositoryController {
         });
     }
 
+    @GetMapping("/{repositoryId}/files/by-path")
+    public Mono<SourceFileView> fileByPath(@PathVariable UUID repositoryId,
+                                           @RequestParam String path,
+                                           @RequestParam(required = false) UUID revisionId) {
+        return Blocking.deferOffload(() -> {
+            UUID resolved = resolveRevisionId(repositoryId, revisionId);
+            return codeIndex.fileByPath(resolved, path)
+                    .orElseThrow(() -> new ResponseStatusException(
+                            HttpStatus.NOT_FOUND, "No indexed file at " + path));
+        });
+    }
+
     @GetMapping("/{repositoryId}/files/content")
     public Mono<SourceContentView> fileContent(@PathVariable UUID repositoryId,
                                                @RequestParam String path,
@@ -183,6 +197,22 @@ public class RepositoryController {
                                  @RequestParam(required = false) UUID revisionId,
                                  @RequestParam(required = false) Integer limit) {
         return Blocking.deferOffload(() -> codeIndex.graphEdges(
+                resolveRevisionId(repositoryId, revisionId), parseEdgeTypes(types), limit));
+    }
+
+    /**
+     * The renderable code universe: nodes plus the edges between them.
+     *
+     * <p>Separate from {@code /graph} rather than a shape flag on it. The two endpoints answer
+     * different questions and have different limits — one pages edge rows, the other returns a
+     * drawable slice — and folding them together would make both contracts harder to state.
+     */
+    @GetMapping("/{repositoryId}/universe")
+    public Mono<UniverseView> universe(@PathVariable UUID repositoryId,
+                                       @RequestParam(required = false) String types,
+                                       @RequestParam(required = false) UUID revisionId,
+                                       @RequestParam(required = false) Integer limit) {
+        return Blocking.deferOffload(() -> codeIndex.universe(
                 resolveRevisionId(repositoryId, revisionId), parseEdgeTypes(types), limit));
     }
 

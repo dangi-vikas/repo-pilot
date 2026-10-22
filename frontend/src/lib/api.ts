@@ -30,6 +30,7 @@ import type {
   SourceContentView,
   SourceFileView,
   SymbolView,
+  UniverseView,
   Uuid,
   WorkspaceSummary,
 } from "@/lib/types";
@@ -220,6 +221,12 @@ export const api = {
       { signal },
     ),
 
+  fileByPath: (repositoryId: Uuid, path: string, revisionId?: Uuid, signal?: AbortSignal) =>
+    request<SourceFileView>(
+      `${API}/repositories/${repositoryId}/files/by-path${query({ path, revisionId })}`,
+      { signal },
+    ),
+
   fileContent: (repositoryId: Uuid, path: string, revisionId?: Uuid, signal?: AbortSignal) =>
     request<SourceContentView>(
       `${API}/repositories/${repositoryId}/files/content${query({ path, revisionId })}`,
@@ -263,6 +270,26 @@ export const api = {
   graph: (repositoryId: Uuid, types?: string, revisionId?: Uuid, signal?: AbortSignal) =>
     request<GraphView>(
       `${API}/repositories/${repositoryId}/graph${query({ types, revisionId })}`,
+      { signal },
+    ),
+
+  /**
+   * The renderable universe: nodes with their metadata plus the edges between them.
+   *
+   * `limit` bounds edges, not nodes. The response states both totals and whether it was
+   * truncated, so the UI can draw a slice without presenting it as the whole repository.
+   */
+  universe: (
+    repositoryId: Uuid,
+    options: { types?: string | undefined; revisionId?: Uuid | undefined; limit?: number | undefined } = {},
+    signal?: AbortSignal,
+  ) =>
+    request<UniverseView>(
+      `${API}/repositories/${repositoryId}/universe${query({
+        types: options.types,
+        revisionId: options.revisionId,
+        limit: options.limit,
+      })}`,
       { signal },
     ),
 

@@ -281,6 +281,40 @@ edges are indexed and listed per symbol, but drawing them turns a dependency gra
 hairball. The page states that scope rather than leaving the difference to be discovered by
 counting rows.
 
+### The Code Universe: a bounded projection
+
+The Code Universe is a second, deliberately different read over the same edges. A paged
+edge list answers "what does this symbol reference"; a graph is only useful when the
+neighbouring structure is present, so `GET /repositories/{id}/universe` returns nodes and
+edges together, inside one budget:
+
+| Field | Meaning |
+| --- | --- |
+| `revisionId` | The revision the projection was read from. Findings and evidence overlays are only applied when this matches their revision. |
+| `nodes` | Indexed symbols touched by the returned edges, with kind, qualified name, package, path, line range, external flag and degree. |
+| `edges` | At most `edgeLimit` edges, ordered deterministically. An edge to an external target that was aggregated out of the node set is not returned. |
+| `totalSymbols` | Indexed symbols in the revision. External aggregate nodes are not counted. |
+| `totalEdges` | Every edge that matched, before the cap. |
+| `edgeLimit` | The effective cap: 1,400 by default, 6,000 at most. The current UI asks for 2,400. |
+| `truncated` | True when the response is a slice rather than the whole edge set. |
+
+External references are grouped by target name (the 220 most-referenced names, ids
+prefixed `external:`). They are names, not source locations. A node is never emitted
+without at least one edge in the response, so the picture has no decorative nodes.
+
+The browser draws this on a Canvas 2D surface driven by `d3-force`, with viewport culling,
+zoom-scaled labels, a minimap and a keyboard-navigable search and inspector. React owns
+the controls and panels, not one element per symbol. Kind, package, edge type, resolution,
+external and findings-only are hard filters; a finding-severity selection is a lens that
+dims rather than removes, because "show me critical" and "remove everything else" are
+different questions.
+
+Findings and investigation evidence are joined client-side and guarded by revision. A
+finding overlay whose run was recorded against another revision is withheld, and an
+evidence trail from another revision is replaced with an explanation. The server does not
+invent a severity for a node, and the graph does not present the slice as the repository.
+The full decision is recorded in [ADR 0014](adr/0014-bounded-code-universe.md).
+
 ---
 
 ## 7. Evidence model
@@ -739,9 +773,10 @@ What has actually been run against this snapshot, and what has not:
 
 | Area | Status |
 | --- | --- |
-| Backend test suite | 229 tests, 35 classes, all passing (JUnit 5, H2 for the `local` profile, real Spring contexts) |
-| Frontend | `tsc --noEmit` clean under strict settings; production build succeeds (118 modules, 377.20 kB JS / 109.60 kB gzip) |
-| Live end-to-end | Indexing, Code Explorer (including findings), Dependency Graph, Performance Lab, Concurrency Inspector, Memory Analysis, AI Investigation, Analysis History, Settings (including artefact retention) and the command palette exercised against a running backend on Windows |
+| Backend test suite | 230 tests, 35 classes, all passing (JUnit 5, H2 for the `local` profile, real Spring contexts) |
+| Frontend | `tsc --noEmit` clean under strict settings; 30 Vitest tests for the universe transforms pass; production build succeeds (578 modules, 608.48 kB JS / 187.03 kB gzip, plus 97.76 kB CSS / 18.76 kB gzip) |
+| Live end-to-end | Indexing, Code Explorer (including findings and `?path=&line=` deep links), Code Universe (search, kind filters, trail overlay, inspector, minimap), Performance Lab, Concurrency Inspector, Memory Analysis, AI Investigation (including evidence path into the universe), Analysis History, Settings (including artefact retention) and the command palette exercised against a running backend on Windows |
+| Code Universe | **Verified on the benchmark corpus and the quality fixture.** The endpoint returns a stated slice (`309` nodes, `2,400` of `100,801` edges; `290` indexed symbols plus external aggregates) and the UI labels the slice. Search, hard filters, severity lens, selection, inspector source excerpt, minimap, evidence-trail overlay and the revision guard were exercised in the browser. `fileByPath` resolves a file outside the first 500-row page, returns `404` for an unknown path and is asserted in `RepositoryIndexingIntegrationTest` |
 | Smoke test | 355 checks against a live server with the deterministic extractor, 0 failures — and 351 with a real Ollama model, 0 failures (readiness, registration, indexing, code intelligence, static analysis, the finding evidence contract, runtime evidence from four readers including all of their refusals, a real thread dump and a real 179 MB heap dump taken from the backend under test, a recorded two-fork JMH result, the retention plan and the refusals around it, 44 investigation checks including an answer read back claim by claim and a question cancelled while still queued, and — when the data directory is known — six checks that inspect the artefact store on disk). The investigation section asserts the contract for any provider and keeps "every claim is VERIFIED" as an extractor-only assertion |
 | Benchmark corpus | 3 002 Java files indexed (16 205 symbols, 105 001 references) and analysed in 118 s for 600 findings; spans recorded in [`corpus/RESULTS.md`](../corpus/RESULTS.md) |
 | Static analysis | **Verified.** Built-in rules and PMD run as a durable job; every stored finding passed its citation check; filters, tallies, run scoping and append-only re-runs asserted in the smoke test and the integration test |

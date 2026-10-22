@@ -239,6 +239,53 @@ export interface MappingView {
   startLine?: number | null;
 }
 
+/**
+ * One node of the code universe.
+ *
+ * `id` is a string rather than a UUID because external targets (`external:java.util.List`)
+ * are aggregated nodes with no declaration behind them. `external` is always present; a
+ * node that is not external has a `path` and can be opened in the Code Explorer.
+ */
+export interface UniverseNode {
+  id: string;
+  kind: string;
+  name: string;
+  qualifiedName?: string | null;
+  path?: string | null;
+  packageName?: string | null;
+  startLine?: number | null;
+  endLine?: number | null;
+  complexity?: number | null;
+  parentId?: string | null;
+  external: boolean;
+}
+
+export interface UniverseEdge {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+  resolution: EdgeResolution;
+  sourceLine?: number | null;
+}
+
+/**
+ * A bounded, renderable slice of a revision's dependency graph.
+ *
+ * `nodes` contains declarations plus at most a few hundred aggregated external targets;
+ * `edges` only ever references ids present in `nodes`. `truncated` says the slice is not
+ * the whole graph, which is why the UI must show `totalEdges` beside what it drew.
+ */
+export interface UniverseView {
+  revisionId: Uuid;
+  nodes: UniverseNode[];
+  edges: UniverseEdge[];
+  totalSymbols: number;
+  totalEdges: number;
+  edgeLimit: number;
+  truncated: boolean;
+}
+
 export interface CoverageView {
   revisionId: Uuid;
   totalFiles: number;

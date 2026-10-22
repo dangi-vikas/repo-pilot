@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { CodeView } from "@/components/CodeView";
 import { FindingsPanel } from "@/components/FindingsPanel";
 import { IndexButton } from "@/components/IndexButton";
@@ -7,6 +8,7 @@ import { Badge, Banner, Card, EmptyState, ErrorState, Loading, PageHeader, Searc
 import { Icon } from "@/components/icons";
 import {
   useCoverage,
+  useFileByPath,
   useFileContent,
   useFileSymbols,
   useFiles,
@@ -24,7 +26,6 @@ import { useSelection } from "@/state/selection";
 
 type LeftMode = "files" | "symbols";
 type DetailTab = "source" | "symbols" | "mappings" | "findings";
-
 /**
  * The code explorer.
  *
@@ -35,6 +36,7 @@ type DetailTab = "source" | "symbols" | "mappings" | "findings";
  */
 export function CodeExplorerPage() {
   const { repositoryId, revisionId, selectRevision } = useSelection();
+  const [searchParams] = useSearchParams();
   const [mode, setMode] = useState<LeftMode>("files");
   const [query, setQuery] = useState("");
   const [selectedFileId, setSelectedFileId] = useState<Uuid | null>(null);
@@ -46,6 +48,8 @@ export function CodeExplorerPage() {
   const [findingsPath, setFindingsPath] = useState<string | null>(null);
   const [findingTarget, setFindingTarget] = useState<{ path: string; symbolId: Uuid | null } | null>(null);
   const [findingHighlight, setFindingHighlight] = useState<{ start: number | null; end: number | null } | null>(null);
+  const deepLinkKey = useRef<string | null>(null);
+  const deepLinkScroll = useRef(false);
 
   const coverage = useCoverage(repositoryId, revisionId);
   const files = useFiles(repositoryId, revisionId);
@@ -53,10 +57,21 @@ export function CodeExplorerPage() {
   const symbols = useSymbols(repositoryId, query, revisionId);
   const mappings = useMappings(repositoryId, revisionId);
 
+  // Deep links can point at any indexed file. The list request is bounded to its first
+  // page, so the path lookup is what makes a link to file 1,200 work at all.
+  const deepLinkPath = searchParams.get("path");
+  const deepLinkFile = useFileByPath(repositoryId, deepLinkPath, revisionId);
+
   const fileList = files.data?.items ?? [];
+  const linkedFile =
+    deepLinkFile.data !== undefined && !fileList.some((file) => file.id === deepLinkFile.data?.id)
+      ? deepLinkFile.data
+      : null;
   const selectedFile = useMemo(
-    () => fileList.find((file) => file.id === selectedFileId) ?? null,
-    [fileList, selectedFileId],
+    () =>
+      fileList.find((file) => file.id === selectedFileId) ??
+      (deepLinkFile.data?.id === selectedFileId ? deepLinkFile.data : null),
+    [fileList, selectedFileId, deepLinkFile.data],
   );
 
   const content = useFileContent(repositoryId, selectedFile?.relativePath ?? null, revisionId);
@@ -89,10 +104,62 @@ export function CodeExplorerPage() {
       }
       return;
     }
-    if (!fileList.some((file) => file.id === selectedFileId)) {
+    if (!fileList.some((file) => file.id === selectedFileId) && deepLinkFile.data?.id !== selectedFileId) {
       setSelectedFileId(fileList[0]?.id ?? null);
     }
-  }, [files.data, fileList, selectedFileId]);
+  }, [files.data, fileList, selectedFileId, deepLinkFile.data]);
+
+  // Deep links from the universe inspector and the findings screen open an exact file and
+  // line. The URL is left intact so the location can be shared; the guard is keyed by
+  // path+line, so choosing another file afterwards is not overridden on the next render.
+  useEffect(() => {
+    const path = searchParams.get("path");
+    if (path === null) {
+      return;
+    }
+    const lineParam = searchParams.get("line");
+    const key = `${path}|${lineParam ?? ""}`;
+    if (deepLinkKey.current === key) {
+      return;
+    }
+    const file =
+      fileList.find((candidate) => candidate.relativePath === path) ??
+      (deepLinkFile.data?.relativePath === path ? deepLinkFile.data : undefined);
+    if (file === undefined) {
+      return;
+    }
+    deepLinkKey.current = key;
+    deepLinkScroll.current = true;
+    setSelectedFileId(file.id);
+    setSelectedSymbol(null);
+    setTab("source");
+    const line = lineParam === null ? Number.NaN : Number(lineParam);
+    setFindingHighlight(Number.isFinite(line) && line > 0 ? { start: line, end: line } : null);
+  }, [searchParams, fileList, deepLinkFile.data]);
+
+  // On a narrow layout the file list and the reader are stacked. A shared link must land
+  // on the requested source, not on the list. Once the content arrives, centre the exact
+  // highlighted line: the page and the code pane are both scroll containers.
+  useEffect(() => {
+    if (!deepLinkScroll.current || selectedFile === null) {
+      return;
+    }
+    if (!window.matchMedia("(max-width: 1080px)").matches) {
+      deepLinkScroll.current = false;
+      return;
+    }
+    if (content.data === undefined) {
+      document.getElementById("file-detail")?.scrollIntoView({ behavior: "auto", block: "start" });
+      return;
+    }
+    deepLinkScroll.current = false;
+    const line = document.querySelector<HTMLElement>("#file-detail .code-line.highlight");
+    if (line !== null) {
+      line.scrollIntoView({ behavior: "auto", block: "center" });
+    } else {
+      document.getElementById("file-detail")?.scrollIntoView({ behavior: "auto", block: "start" });
+    }
+  }, [selectedFile, content.data]);
 
   // A finding clicked in the findings tab asks for a file and a symbol. The symbol can only
   // be resolved once the target file's symbols have loaded, so the request waits here
@@ -232,6 +299,13 @@ export function CodeExplorerPage() {
         }
       />
 
+      {deepLinkPath !== null && deepLinkFile.isError ? (
+        <Banner tone="warning" title="That deep link did not resolve">
+          No indexed file at <span className="mono-wrap">{deepLinkPath}</span> in this revision.
+          The explorer has kept its normal first file; the path in the address bar is unchanged.
+        </Banner>
+      ) : null}
+
       {coverage.data !== undefined ? (
         <>
           <div className="chip-row" style={{ marginBottom: "var(--space-3)" }}>
@@ -290,6 +364,26 @@ export function CodeExplorerPage() {
             />
           </div>
           <div className="list">
+            {mode === "files" && linkedFile !== null ? (
+              <div
+                className={linkedFile.id === selectedFileId ? "list-item selected" : "list-item"}
+                onClick={() => {
+                  setSelectedFileId(linkedFile.id);
+                  setSelectedSymbol(null);
+                  setFindingHighlight(null);
+                  setTab("source");
+                }}
+              >
+                <span className="list-item-title rp-truncate" title={linkedFile.relativePath}>
+                  {linkedFile.relativePath}
+                </span>
+                <span className="list-item-sub">
+                  <Badge tone="info">Linked file</Badge>
+                  {titleCase(linkedFile.parseStatus)}
+                  {hasValue(linkedFile.lineCount) ? ` · ${formatNumber(linkedFile.lineCount)} lines` : ""}
+                </span>
+              </div>
+            ) : null}
             {mode === "files" ? (
               files.isLoading ? (
                 <Loading label="Loading files" />
@@ -351,7 +445,7 @@ export function CodeExplorerPage() {
           </div>
         </Card>
 
-        <Card flush>
+        <Card flush id="file-detail">
           {selectedFile === null ? (
             <EmptyState icon="file" title="No file selected" message="Pick a file on the left to read it." />
           ) : (

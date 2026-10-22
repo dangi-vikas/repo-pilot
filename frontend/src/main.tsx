@@ -4,6 +4,8 @@ import { App } from "@/App";
 import "@/styles/tokens.css";
 import "@/styles/global.css";
 import "@/styles/app.css";
+import "@/styles/redesign.css";
+import "@/styles/universe.css";
 
 const container = document.getElementById("root");
 if (container === null) {

@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams, Link } from "react-router-dom";
 import { RepositoryRequired } from "@/components/RepositoryRequired";
 import {
   Badge,
@@ -73,12 +74,29 @@ export function InvestigationPage() {
 function Investigation({ repositoryId }: { repositoryId: Uuid }) {
   const overview = useOverview();
   const ai = overview.data?.ai;
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [selectedId, setSelectedId] = useState<Uuid | null>(null);
   const [question, setQuestion] = useState("");
   const [scope, setScope] = useState("");
   const [highlight, setHighlight] = useState<string | null>(null);
   const highlightTimer = useRef<number | null>(null);
+
+  // The universe inspector and overview ask box hand off a question through the URL.
+  // It is moved into form state and removed from the URL, so a reload does not silently
+  // refill a question that was already asked (or abandoned).
+  useEffect(() => {
+    const askParam = searchParams.get("ask");
+    if (askParam === null || askParam.length === 0) {
+      return;
+    }
+    setQuestion(askParam);
+    setScope(searchParams.get("scope") ?? "");
+    const next = new URLSearchParams(searchParams);
+    next.delete("ask");
+    next.delete("scope");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   // Poll only while something is in flight. A finished list is a record; refreshing it for no
   // reason would make a static page look alive. The flag is set from the data an effect has seen,
@@ -448,7 +466,11 @@ function InvestigationDetailView({
 
           <Diagnostics detail={detail} />
 
-          <EvidenceList evidence={detail.evidence} highlight={highlight} />
+          <EvidenceList
+            evidence={detail.evidence}
+            highlight={highlight}
+            investigationId={detail.id}
+          />
 
           <div>
             <div className="list-item-title" style={{ marginBottom: "var(--space-2)" }}>
@@ -669,14 +691,29 @@ function DiagnosticList({
   );
 }
 
-function EvidenceList({ evidence, highlight }: { evidence: InvestigationEvidence[]; highlight: string | null }) {
+function EvidenceList({
+  evidence,
+  highlight,
+  investigationId,
+}: {
+  evidence: InvestigationEvidence[];
+  highlight: string | null;
+  investigationId: Uuid;
+}) {
   if (evidence.length === 0) {
     return null;
   }
   return (
     <div>
-      <div className="list-item-title" style={{ marginBottom: "var(--space-2)" }}>
-        Evidence the model was given
+      <div className="evidence-head">
+        <div className="list-item-title">Evidence the model was given</div>
+        <Link
+          className="btn btn-sm"
+          to={`/universe?trail=${investigationId}`}
+          title="Open the Code Universe with this investigation's cited evidence marked"
+        >
+          Show evidence path in Code Universe
+        </Link>
       </div>
       <div className="table-wrap">
         <table className="data">
