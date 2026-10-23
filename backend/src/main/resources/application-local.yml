@@ -35,8 +35,9 @@ spring:
 
 repopilot:
   security:
-    # Local profile still requires a bearer token. The token is generated on first
-    # start and written to <data-dir>/token.txt when REPOPILOT_AUTH_TOKEN is unset.
+    # Local profile still requires a bearer token. When REPOPILOT_AUTH_TOKEN is
+    # unset, a fresh token is generated on every start and written to
+    # <data-dir>/token.txt.
     allow-remote-bind: false
 
 logging:

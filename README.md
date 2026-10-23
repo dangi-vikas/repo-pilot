@@ -8,6 +8,9 @@ zero external dependencies: no cloud account, no API key, no telemetry. The defa
 provider is a local [Ollama](https://ollama.com) instance, and every AI claim is checked
 against indexed evidence by the backend before you see it.
 
+**Running it locally:** see the [Quickstart](#quickstart) below or the full
+[local setup guide](docs/local-setup.md).
+
 ![Overview](docs/screenshots/overview.png)
 
 ## The Code Universe
@@ -148,65 +151,110 @@ behind it; the capability-page fallback in the shell remains for future work.
 
 ## Quickstart
 
-### Option 1 — Docker Compose
+For the full walkthrough — workspace roots, token options, Windows/macOS/Linux commands,
+optional Ollama and troubleshooting — see **[docs/local-setup.md](docs/local-setup.md)**.
 
-```bash
-docker compose up --build
-```
+### Recommended — local, from source
 
-Then open <http://localhost:3000>. The stack is PostgreSQL, the backend and an nginx-served
-frontend; all published ports are bound to loopback.
+Requirements: JDK 21, the bundled Maven wrapper, Node 20+ and npm. PostgreSQL, Docker and
+Ollama are not required. The default `local` profile uses an H2 file database, and the
+application remains useful without a model. On macOS/Linux, if `./mvnw` is not executable,
+run `chmod +x backend/mvnw` once from the repository root, or use
+`bash mvnw spring-boot:run` from `backend/`.
 
-On first start, if `REPOPILOT_AUTH_TOKEN` is not set, the backend generates a token and
-writes it to `/data/token.txt` inside the backend container:
+Set a workspace root and, preferably, a token in the terminal that will run the backend.
 
-```bash
-docker compose exec backend cat /data/token.txt
-```
-
-Paste that token into the connection gate in the UI.
-
-> **Verification note.** The container files in this repository are written but were not
-> executed here: the environment this snapshot was built in has no Docker daemon. The
-> backend image, the nginx configuration and the Compose file have been reviewed and the
-> frontend production build has been run and verified, but `docker compose up --build`
-> itself is **unverified**. Treat it as the intended path and report what you see.
-
-### Option 2 — local, from source
-
-Requirements: JDK 21, Maven (or the bundled `mvnw`), Node 20+.
-
-```bash
-# backend — H2 file database, no external services needed
-cd backend
-./mvnw spring-boot:run          # Windows: .\mvnw.cmd spring-boot:run
-
-# frontend — a second terminal
-cd frontend
-npm install
-npm run dev                     # http://localhost:5173
-```
-
-The backend binds `127.0.0.1:8080` by default. On first start it prints and stores a
-generated token at `<data-dir>/token.txt`; alternatively set `REPOPILOT_AUTH_TOKEN` before
-starting. The dev server proxies `/api` and `/actuator` to the backend, so no CORS
-configuration is needed in development.
-
-To point RepoPilot at the sample repository in this repo:
+PowerShell:
 
 ```powershell
 $env:REPOPILOT_WORKSPACE_ROOTS = "C:\Users\you\Projects\repo-pilot"
-$env:REPOPILOT_AUTH_TOKEN      = "a-token-you-choose-16-chars-min"
+$env:REPOPILOT_AUTH_TOKEN      = "local-dev-token-change-me"
+```
+
+macOS/Linux:
+
+```bash
+export REPOPILOT_WORKSPACE_ROOTS="$HOME/Projects/repo-pilot"
+export REPOPILOT_AUTH_TOKEN="local-dev-token-change-me"
+```
+
+Use a random token rather than the literal example above; with PowerShell,
+`[guid]::NewGuid().ToString()` produces one, and on macOS/Linux
+`openssl rand -hex 24` does.
+
+`REPOPILOT_WORKSPACE_ROOTS` is the allow-list RepoPilot may read; point it at the
+repository root to register `examples/sample-java`, or at the parent of your own
+repositories. If unset, RepoPilot uses `~/repo-pilot-workspace`.
+
+Start the backend from the repository root:
+
+```powershell
 cd backend
 .\mvnw.cmd spring-boot:run
 ```
 
-Register `examples/sample-java` in the UI and press **Index**. See
-[scripts/smoke-test.ps1](scripts/smoke-test.ps1) for the same flow driven from the shell.
+```bash
+cd backend
+./mvnw spring-boot:run
+```
+
+In a second terminal, from the repository root, start the frontend:
+
+```powershell
+cd frontend
+npm.cmd ci
+npm.cmd run dev
+```
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+The backend is then at `http://127.0.0.1:8080` and the frontend at
+`http://localhost:5173`.
+
+If `REPOPILOT_AUTH_TOKEN` is unset, the backend generates a fresh token on **every** start
+and writes it to `<data-dir>/token.txt` — with the commands above,
+`backend/data/token.txt`. Read it from `backend/` with `Get-Content .\data\token.txt`
+(Windows) or `cat data/token.txt` (macOS/Linux), or set an explicit token so restarts do
+not invalidate the browser tab.
+
+Open <http://localhost:5173>, paste the token, use the automatically created **Default
+workspace**, choose **Register repository**, enter `examples/sample-java` (or
+`sample-java` if you placed it in the default workspace), and press **Index**. The OpenAPI
+document is at <http://127.0.0.1:8080/api/docs> and Swagger UI at
+<http://127.0.0.1:8080/api/docs/ui>.
+
+The dev server proxies `/api` and `/actuator` to the backend, so no CORS configuration is
+needed in development. See [scripts/smoke-test.ps1](scripts/smoke-test.ps1) for the same
+flow driven from the shell.
+
+### Optional — Docker Compose
+
+The stack runs PostgreSQL, the backend and an nginx-served frontend. It requires an
+explicit token because the backend binds `0.0.0.0` inside the container:
+
+```bash
+cp .env.example .env          # Windows: Copy-Item .env.example .env
+# edit .env and set REPOPILOT_AUTH_TOKEN to at least 16 characters
+docker compose up --build
+```
+
+Then open <http://localhost:3000> and paste the same token. The published ports are
+loopback-only. The default workspace mount is `./examples`, so register `sample-java`;
+set `REPOPILOT_WORKSPACE_HOST_DIR` to mount a different repository directory.
+
+> **Verification note.** The container files have not been executed in the environment
+> this repository was built in: no Docker daemon was available. The backend image, nginx
+> configuration and Compose file have been reviewed, but `docker compose up --build`
+> itself is **unverified**. Treat it as the intended path and report what you see.
 
 > Windows note: `powershell` blocks unsigned `.ps1` files by default. Every script here
 > should be invoked as
-> `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\<name>.ps1`.
+> `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\<name>.ps1`. If npm
+> scripts are blocked, use `npm.cmd` instead of `npm`.
 
 ---
 
@@ -560,9 +608,10 @@ posture is documented in [docs/security.md](docs/security.md); the rules that ma
 - **Loopback by default.** `server.address` defaults to `127.0.0.1`. Binding elsewhere is
   refused unless it is explicitly allowed *and* a token is configured.
 - **One bearer token, no sessions.** No cookies, no CSRF surface, no login flow. The token
-  is generated on first start to `<data-dir>/token.txt` or supplied via
-  `REPOPILOT_AUTH_TOKEN`, and compared in constant time. Actuator `metrics` and `prometheus`
-  require the same authority; `health` and `info` are public and expose no repository data.
+  is generated on startup to `<data-dir>/token.txt` when `REPOPILOT_AUTH_TOKEN` is unset, or
+  supplied through that variable, and compared in constant time. Actuator `metrics` and
+  `prometheus` require the same authority; `health` and `info` are public and expose no
+  repository data.
 - **Sandboxed reads.** Repository paths must resolve inside an allow-listed root, with
   traversal and symlink escapes rejected before any I/O.
 - **Credentials are never opened.** Files matching credential names and extensions are
@@ -597,8 +646,9 @@ posture is documented in [docs/security.md](docs/security.md); the rules that ma
   landed file so the refusal can name the exact size and the exact limit. Both answer
   `413 LIMIT_EXCEEDED`, and neither leaves a scratch file behind. Raise them together.
 - **Nothing is sent anywhere by default.** The default provider is a local Ollama instance.
-  The optional OpenAI-compatible provider is disabled unless a key is explicitly supplied.
-  A recording never leaves the machine: the reader runs in process. Neither does a thread dump,
+  This build contains only the Ollama and deterministic adapters; the
+  `repopilot.ai.openai-compatible.*` settings are reserved for a future adapter and do not
+  construct a cloud provider. A recording never leaves the machine: the reader runs in process. Neither does a thread dump,
   which is parsed in process and whose stacks are never copied out of the file. Neither does a
   heap dump, which is walked in two streaming passes and whose object contents are never copied
   anywhere — the only thing stored from it is the census and, per type row, the type's own name.
@@ -627,7 +677,7 @@ backend/                     Spring Boot 3.5 · Java 21 · WebFlux + JPA
     jobs/                    durable queue, workers, lifecycle, handlers
     repository/              registration, revisions, sandbox, scan policy
     workspace/               workspace registration
-    ai/                      AiProvider abstraction (Ollama, OpenAI-compatible, deterministic)
+    ai/                      AiProvider abstraction (Ollama, deterministic; cloud adapter reserved)
     investigation/           evidence retrieval · prompt · answer parsing · citation checks
     security/                bearer auth, rate limiting, startup validation
     observability/           health indicators, metrics, tracing
@@ -685,6 +735,7 @@ Further reading:
 
 | Document | Contents |
 | --- | --- |
+| [docs/local-setup.md](docs/local-setup.md) | Step-by-step local setup: source and Docker paths, workspace roots, tokens, optional Ollama and troubleshooting |
 | [docs/architecture.md](docs/architecture.md) | How the system is put together, and why; ends with a verification status table |
 | [docs/security.md](docs/security.md) | Threat model and control inventory, including what is *not* defended |
 | [corpus/RESULTS.md](corpus/RESULTS.md) | Measured figures, the method behind them, and what they do not say |

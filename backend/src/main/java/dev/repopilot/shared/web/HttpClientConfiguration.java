@@ -17,9 +17,10 @@ import java.util.concurrent.TimeUnit;
 /**
  * Applies RepoPilot's outbound HTTP policy to every {@link WebClient}.
  *
- * <p>Outbound calls in RepoPilot are made to the local model runtime and to the
- * optional OpenAI-compatible endpoint. Both are treated as unreliable third parties,
- * so every client gets:
+ * <p>Outbound calls in RepoPilot are made to the local model runtime. (An
+ * OpenAI-compatible endpoint is reserved for a future adapter; when added, it must be
+ * treated the same way.) Model endpoints are unreliable third parties, so every client
+ * gets:
  *
  * <ul>
  *   <li>a bounded connection pool with an acquire timeout, so a slow provider cannot

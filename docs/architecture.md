@@ -60,6 +60,9 @@ that shaped it are recorded individually under [`docs/adr/`](./adr).
 
 - Spring profile `postgres`. The same application against PostgreSQL. See
   `docker-compose.yml` and ADR 0004 for why one migration set targets both.
+- The container binds `0.0.0.0`, so Compose requires an explicit
+  `REPOPILOT_AUTH_TOKEN` and sets `REPOPILOT_SECURITY_ALLOW_REMOTE_BIND=true`; the
+  published ports remain loopback-only. See [local-setup.md](local-setup.md).
 
 Both topologies run the *same* code; only the datasource and profile differ.
 
@@ -76,7 +79,7 @@ One deployable, organised by feature package (ADR 0001):
 | `dev.repopilot.codeindex` | Parse Java, extract symbols/references/mappings, persist the index, resolve edges, answer code-intelligence queries. |
 | `dev.repopilot.analysis` | Static analysis: analyzers as pure functions over handed-in sources, the run/story of findings, citation verification, and the finding queries. |
 | `dev.repopilot.runtime` | Runtime evidence: artefact ingestion and content-addressed storage, the four readers (JFR, thread dumps, heap dumps, benchmark results), measurement mapping, their job handlers, retention, and the runtime query views. |
-| `dev.repopilot.ai` | Provider abstraction and registry: Ollama over its wire protocol, an optional OpenAI-compatible provider, and the deterministic extractor used for offline verification. |
+| `dev.repopilot.ai` | Provider abstraction and registry: Ollama over its wire protocol and the deterministic extractor used for offline verification. The OpenAI-compatible configuration is reserved; no cloud adapter is constructed in this build. |
 | `dev.repopilot.investigation` | Investigation lifecycle and evidence handling: deterministic retrieval, prompt assembly, answer parsing, citation verification, grounding, and the investigation query views. |
 | `dev.repopilot.jobs` | Durable job lifecycle, dispatch, cancellation, retries, recovery. |
 | `dev.repopilot.security` | Bearer-token authentication and the token service. |

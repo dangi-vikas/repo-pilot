@@ -84,7 +84,11 @@ public record RepoPilotProperties(
     /** AI provider configuration. Absence of a provider is a supported state. */
     public record Ai(
             @DefaultValue("true") boolean enabled,
-            /** Default provider id: {@code ollama} or {@code openai-compatible}. */
+            /**
+             * Active provider id. This build constructs {@code ollama} and
+             * {@code deterministic}; {@code openai-compatible} is reserved and not
+             * implemented.
+             */
             @DefaultValue("ollama") String provider,
             @DefaultValue("http://localhost:11434") String baseUrl,
             @DefaultValue("qwen2.5-coder:7b") String chatModel,
@@ -101,7 +105,10 @@ public record RepoPilotProperties(
     ) {
     }
 
-    /** Optional OpenAI-compatible cloud provider. Disabled unless fully configured. */
+    /**
+     * Reserved configuration for a future OpenAI-compatible cloud provider. No adapter
+     * is constructed in this build; setting these values does not enable one.
+     */
     public record OpenAiCompatible(
             @DefaultValue("false") boolean enabled,
             @DefaultValue("") String baseUrl,

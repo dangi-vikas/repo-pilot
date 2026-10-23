@@ -234,8 +234,7 @@ than a filter on prompt text, and the two qualifications below say what that mea
 
 Redaction before persistence (control 6) protects stored analyzer output; it is not applied to
 prompt text. An investigation sends the excerpts it retrieved, so a secret written in a
-non-credential file could reach a *local* model. It can only leave the machine if the operator
-explicitly enabled a non-local provider (§7).
+non-credential file could reach a *local* model. This build has no non-local provider; see §7.
 
 The fence around an excerpt (` ``` `) is a formatting convention, not a security boundary: a file
 that contains a fence can end the quoting early. What that buys an attacker is influence over the
@@ -249,15 +248,15 @@ answer is never rendered as an observation.
 
 By default, none. Ollama runs on loopback. That was exercised with a real model: Ollama 0.40.7 on
 `127.0.0.1:11434` answered an investigation, so the prompt and its excerpts reached a process on this
-machine and no network peer. The only path by which source could leave the
-machine is the optional OpenAI-compatible provider, which is:
+machine and no network peer. This build contains only the Ollama and deterministic adapters.
+The `repopilot.ai.openai-compatible.*` properties and `REPOPILOT_AI_OPENAI_*` variables are
+reserved for a future adapter; they do not construct a provider, so no cloud path is active in
+this build. The Ollama base URL is configurable: pointing it at a non-loopback host would send
+the same excerpts there, so keep it on loopback for the local-only posture.
 
-- **disabled by default** (`repopilot.ai.openai-compatible.enabled=false`), and
-- **disabled unless fully configured** (base URL, API key, model).
-
-Enabling it is an explicit, deliberate act by the operator. Logging of source content and
-prompts is off by default (`repopilot.privacy.log-source-content=false`,
-`log-prompts=false`) so code does not end up in logs read by log shippers.
+Logging of source content and prompts is off by default
+(`repopilot.privacy.log-source-content=false`, `log-prompts=false`) so code does not end up in
+logs read by log shippers.
 
 An investigation sends the prompt — the question, the numbered evidence and at most 24 lines
 of any one excerpt — to whichever provider is configured, and to nothing else. What is stored
@@ -424,7 +423,7 @@ both immediately.
   re-read the excerpt it cited.
 - Every excerpt sent to a model is hashed and never stored: the database keeps the hash, so a
   citation can be re-checked without turning the schema into a prompt log.
-- No source leaves the machine unless the operator explicitly enables a cloud provider.
+- By default, no source leaves the machine: Ollama points at loopback, and this build has no separate cloud adapter.
 - A recording never leaves the machine: it is read in process, under content-addressed storage
   that no client-supplied name can influence.
 - A thread dump is read in process too, and only the counts and the JVM's own deadlock verdict are

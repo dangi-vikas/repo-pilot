@@ -7,13 +7,12 @@
 # (the API reference). Both ports are published on loopback only: RepoPilot is a
 # single-operator tool and nothing here is meant to be reachable from a network.
 #
-# The backend requires a bearer token. If REPOPILOT_AUTH_TOKEN is not set, the
-# backend generates one on first start and writes it to <data-dir>/token.txt:
+# The backend requires a bearer token. Because it binds 0.0.0.0 inside the
+# container, Docker Compose needs an explicit token: copy .env.example to .env
+# and set REPOPILOT_AUTH_TOKEN to at least 16 characters. A generated token is
+# refused on a non-loopback bind. The published ports are loopback-only.
 #
-#   docker compose exec backend cat /data/token.txt
-#
-# Every variable below has a working default, so no .env file is required.
-# Copy .env.example to .env to change any of them.
+# Every other variable below has a working default.
 # =============================================================================
 
 name: repopilot
@@ -58,13 +57,18 @@ services:
       # so the effective exposure is unchanged from the bare-metal default.
       SERVER_ADDRESS: 0.0.0.0
       SERVER_PORT: "8080"
+      # Required by StartupSecurityValidator for the non-loopback container
+      # bind. The host port is still published on 127.0.0.1 only.
+      REPOPILOT_SECURITY_ALLOW_REMOTE_BIND: "true"
 
       REPOPILOT_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-repopilot}
       REPOPILOT_DB_USERNAME: ${POSTGRES_USER:-repopilot}
       REPOPILOT_DB_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-a-real-deployment}
 
-      # Empty means "generate on first start into /data/token.txt".
-      REPOPILOT_AUTH_TOKEN: ${REPOPILOT_AUTH_TOKEN:-}
+      # Required. Set this in .env to a strong value of at least 16 characters.
+      # Do not rely on a generated token here: the validator rejects generated
+      # tokens on a non-loopback bind.
+      REPOPILOT_AUTH_TOKEN: "${REPOPILOT_AUTH_TOKEN:?Set REPOPILOT_AUTH_TOKEN in .env to at least 16 characters}"
 
       REPOPILOT_DATA_DIR: /data
       # The only directory a job is allowed to read a repository from. Files are

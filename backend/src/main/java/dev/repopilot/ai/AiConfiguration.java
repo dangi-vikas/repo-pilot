@@ -13,14 +13,13 @@ import org.springframework.web.reactive.function.client.WebClient;
 /**
  * Wires AI providers.
  *
- * <p>Provider construction is explicit rather than reflective. RepoPilot ships two
- * adapters and no plugin system, so an explicit factory is clearer and lets each adapter
- * validate its own configuration at construction time — a misconfigured cloud provider
- * fails at startup with a specific message instead of at first use with a generic one.
+ * <p>Provider construction is explicit rather than reflective. RepoPilot currently ships
+ * two adapters and no plugin system, so an explicit factory is clearer and lets each
+ * adapter validate its own configuration at construction time.
  *
- * <p>The OpenAI-compatible adapter is only constructed when it is enabled <em>and</em>
- * complete. A half-configured cloud provider is a configuration error that is logged
- * clearly and then ignored, so it cannot break the local-first default experience.
+ * <p>The OpenAI-compatible properties are reserved for a future adapter. This
+ * configuration does not construct a cloud provider; only Ollama and the deterministic
+ * extractor are registered today.
  */
 @Configuration
 public class AiConfiguration {
